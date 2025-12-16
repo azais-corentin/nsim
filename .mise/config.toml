@@ -1,0 +1,3 @@
+[tools]
+"aqua:mvdan/sh" = "latest"
+"aqua:dprint/dprint" = "latest"

@@ -1,25 +1,19 @@
 [package]
-name = "eframe_template"
+name = "nsim"
 version = "0.1.0"
-authors = ["Emil Ernerfeldt <emil.ernerfeldt@gmail.com>"]
+authors = ["Corentin AZAIS <azaiscorentin@gmail.com>"]
 edition = "2024"
-include = ["LICENSE-APACHE", "LICENSE-MIT", "**/*.rs", "Cargo.toml"]
-rust-version = "1.88"
+include = ["LICENSE", "**/*.rs", "Cargo.toml"]
+rust-version = "1.92"
 
 [package.metadata.docs.rs]
 all-features = true
 targets = ["x86_64-unknown-linux-gnu", "wasm32-unknown-unknown"]
 
 [dependencies]
+eframe = { version = "0.33.0", default-features = false, features = ["accesskit", "default_fonts", "glow", "persistence", "wayland", "x11"] }
 egui = "0.33.0"
-eframe = { version = "0.33.0", default-features = false, features = [
-    "accesskit",     # Make egui compatible with screen readers. NOTE: adds a lot of dependencies.
-    "default_fonts", # Embed the default egui fonts.
-    "glow",          # Use the glow rendering backend. Alternative: "wgpu".
-    "persistence",   # Enable restoring app state when restarting the app.
-    "wayland",       # To support Linux (and CI)
-    "x11",           # To support older Linux distributions (restores one of the default features)
-] }
+egui_tiles = { version = "0.14.1", features = ["serde"] }
 log = "0.4.27"
 
 # You only need serde if you want app persistence:
@@ -32,7 +26,7 @@ env_logger = "0.11.8"
 # web:
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen-futures = "0.4.50"
-web-sys = "0.3.70"              # to access the DOM (to hide the loading text)
+web-sys = "0.3.70" # to access the DOM (to hide the loading text)
 
 [profile.release]
 opt-level = 2 # fast and small wasm
@@ -41,9 +35,7 @@ opt-level = 2 # fast and small wasm
 [profile.dev.package."*"]
 opt-level = 2
 
-
 [patch.crates-io]
-
 # If you want to use the bleeding edge version of egui and eframe:
 # egui = { git = "https://github.com/emilk/egui", branch = "main" }
 # eframe = { git = "https://github.com/emilk/egui", branch = "main" }
@@ -51,7 +43,6 @@ opt-level = 2
 # If you fork https://github.com/emilk/egui you can test with:
 # egui = { path = "../egui/crates/egui" }
 # eframe = { path = "../egui/crates/eframe" }
-
 
 # ----------------------------------------------------------------------------------------
 # Lints:
@@ -69,7 +60,7 @@ rust_2018_idioms = { level = "warn", priority = -1 }
 rust_2021_prelude_collisions = "warn"
 semicolon_in_expressions_from_macros = "warn"
 trivial_numeric_casts = "warn"
-unsafe_op_in_unsafe_fn = "warn"                         # `unsafe_op_in_unsafe_fn` may become the default in future Rust versions: https://github.com/rust-lang/rust/issues/71668
+unsafe_op_in_unsafe_fn = "warn" # `unsafe_op_in_unsafe_fn` may become the default in future Rust versions: https://github.com/rust-lang/rust/issues/71668
 unused_extern_crates = "warn"
 unused_import_braces = "warn"
 unused_lifetimes = "warn"
@@ -77,11 +68,9 @@ unused_lifetimes = "warn"
 trivial_casts = "allow"
 unused_qualifications = "allow"
 
-
 [workspace.lints.rustdoc]
 all = "warn"
 missing_crate_level_docs = "warn"
-
 
 [workspace.lints.clippy]
 allow_attributes = "warn"
@@ -97,11 +86,11 @@ dbg_macro = "warn"
 debug_assert_with_mut_call = "warn"
 default_union_representation = "warn"
 derive_partial_eq_without_eq = "warn"
-disallowed_macros = "warn"                   # See clippy.toml
-disallowed_methods = "warn"                  # See clippy.toml
-disallowed_names = "warn"                    # See clippy.toml
-disallowed_script_idents = "warn"            # See clippy.toml
-disallowed_types = "warn"                    # See clippy.toml
+disallowed_macros = "warn" # See clippy.toml
+disallowed_methods = "warn" # See clippy.toml
+disallowed_names = "warn" # See clippy.toml
+disallowed_script_idents = "warn" # See clippy.toml
+disallowed_types = "warn" # See clippy.toml
 doc_comment_double_space_linebreaks = "warn"
 doc_link_with_quotes = "warn"
 doc_markdown = "warn"
@@ -220,7 +209,6 @@ string_add = "warn"
 string_add_assign = "warn"
 string_lit_as_bytes = "warn"
 string_lit_chars_any = "warn"
-string_to_string = "warn"
 suspicious_command_arg_space = "warn"
 suspicious_xor_used_as_pow = "warn"
 todo = "warn"
@@ -230,7 +218,7 @@ trailing_empty_array = "warn"
 trait_duplication_in_bounds = "warn"
 transmute_ptr_to_ptr = "warn"
 tuple_array_conversions = "warn"
-unchecked_duration_subtraction = "warn"
+unchecked_time_subtraction = "warn"
 undocumented_unsafe_blocks = "warn"
 unimplemented = "warn"
 uninhabited_references = "warn"
@@ -259,4 +247,4 @@ wildcard_imports = "warn"
 zero_sized_map_values = "warn"
 
 manual_range_contains = "allow" # this is better on 'allow'
-map_unwrap_or = "allow"         # this is better on 'allow'
+map_unwrap_or = "allow" # this is better on 'allow'
