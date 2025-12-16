@@ -1,6 +1,7 @@
 use egui::{Color32, Ui};
 use egui_snarl::ui::{
-    AnyPins, NodeLayout, PinInfo, PinPlacement, SnarlStyle, SnarlViewer, WireStyle,
+    AnyPins, BackgroundPattern, Grid, NodeLayout, PinInfo, PinPlacement, SnarlStyle, SnarlViewer,
+    WireStyle,
 };
 use egui_snarl::{InPin, InPinId, NodeId, OutPin, OutPinId, Snarl};
 
@@ -20,11 +21,15 @@ pub enum EditorNode {
 }
 
 /// Returns the default style for the snarl widget.
-pub const fn default_style() -> SnarlStyle {
+pub fn default_style() -> SnarlStyle {
     SnarlStyle {
         node_layout: Some(NodeLayout::coil()),
         pin_placement: Some(PinPlacement::Edge),
         pin_size: Some(7.0),
+        bg_pattern: Some(BackgroundPattern::Grid(Grid::new(
+            egui::Vec2::new(20.0, 20.0),
+            0.0,
+        ))),
         node_frame: Some(egui::Frame {
             inner_margin: egui::Margin::same(8),
             outer_margin: egui::Margin {
@@ -33,14 +38,14 @@ pub const fn default_style() -> SnarlStyle {
                 top: 0,
                 bottom: 4,
             },
-            corner_radius: egui::CornerRadius::same(8),
+            corner_radius: egui::CornerRadius::same(4),
             fill: Color32::from_gray(30),
             stroke: egui::Stroke::NONE,
             shadow: egui::Shadow::NONE,
         }),
         bg_frame: Some(egui::Frame {
             inner_margin: egui::Margin::ZERO,
-            outer_margin: egui::Margin::same(2),
+            outer_margin: egui::Margin::ZERO,
             corner_radius: egui::CornerRadius::ZERO,
             fill: Color32::from_gray(40),
             stroke: egui::Stroke::NONE,
