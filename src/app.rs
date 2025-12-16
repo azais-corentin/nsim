@@ -1,3 +1,7 @@
+use crate::nodes::{self, EditorNode, EditorViewer};
+use egui_snarl::Snarl;
+use egui_snarl::ui::SnarlWidget;
+
 /// Pane types for the tile tree.
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 enum Pane {
@@ -27,9 +31,11 @@ fn create_tree() -> egui_tiles::Tree<Pane> {
 }
 
 /// Defines how panes are rendered and their behavior.
-struct TreeBehavior;
+struct TreeBehavior<'a> {
+    snarl: &'a mut Snarl<EditorNode>,
+}
 
-impl egui_tiles::Behavior<Pane> for TreeBehavior {
+impl egui_tiles::Behavior<Pane> for TreeBehavior<'_> {
     fn tab_title_for_pane(&mut self, pane: &Pane) -> egui::WidgetText {
         match pane {
             Pane::Left => "Node Library".into(),
@@ -42,21 +48,21 @@ impl egui_tiles::Behavior<Pane> for TreeBehavior {
         &mut self,
         ui: &mut egui::Ui,
         _tile_id: egui_tiles::TileId,
-        _pane: &mut Pane,
+        pane: &mut Pane,
     ) -> egui_tiles::UiResponse {
-        ui.label("hello, world");
+        match pane {
+            Pane::Center => {
+                SnarlWidget::new()
+                    .id(egui::Id::new("editor-snarl"))
+                    .style(nodes::default_style())
+                    .show(self.snarl, &mut EditorViewer, ui);
+            }
+            Pane::Left | Pane::Right => {
+                ui.label("hello, world");
+            }
+        }
 
-        // // Make the pane draggable by detecting drag on the remaining area
-        // let dragged = ui
-        //     .allocate_rect(ui.available_rect_before_wrap(), egui::Sense::drag())
-        //     .on_hover_cursor(egui::CursorIcon::Grab)
-        //     .dragged();
-
-        // if dragged {
-        //     egui_tiles::UiResponse::DragStarted
-        // } else {
         egui_tiles::UiResponse::None
-        // }
     }
 
     fn simplification_options(&self) -> egui_tiles::SimplificationOptions {
@@ -68,13 +74,13 @@ impl egui_tiles::Behavior<Pane> for TreeBehavior {
 
     fn is_tab_closable(
         &self,
-        _tiles: &egui_tiles::Tiles<Pane>,
-        _tile_id: egui_tiles::TileId,
+        tiles: &egui_tiles::Tiles<Pane>,
+        tile_id: egui_tiles::TileId,
     ) -> bool {
-        match _tiles.get(_tile_id) {
-            Some(egui_tiles::Tile::Pane(Pane::Center)) => false,
-            _ => true,
-        }
+        !matches!(
+            tiles.get(tile_id),
+            Some(egui_tiles::Tile::Pane(Pane::Center))
+        )
     }
 }
 
@@ -83,12 +89,14 @@ impl egui_tiles::Behavior<Pane> for TreeBehavior {
 #[serde(default)]
 pub struct TemplateApp {
     tree: egui_tiles::Tree<Pane>,
+    snarl: Snarl<EditorNode>,
 }
 
 impl Default for TemplateApp {
     fn default() -> Self {
         Self {
             tree: create_tree(),
+            snarl: Snarl::new(),
         }
     }
 }
@@ -130,7 +138,9 @@ impl eframe::App for TemplateApp {
         });
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            let mut behavior = TreeBehavior;
+            let mut behavior = TreeBehavior {
+                snarl: &mut self.snarl,
+            };
             self.tree.ui(&mut behavior, ui);
         });
     }
