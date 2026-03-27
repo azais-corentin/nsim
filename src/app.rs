@@ -1,4 +1,5 @@
-use crate::nodes::{self, EditorNode, EditorViewer};
+use crate::nodes::{self, SimNode, SimViewer};
+use crate::simulation::SimConfig;
 use egui_snarl::Snarl;
 use egui_snarl::ui::SnarlWidget;
 
@@ -18,7 +19,6 @@ fn create_tree() -> egui_tiles::Tree<Pane> {
     let center = tiles.insert_pane(Pane::Center);
     let right = tiles.insert_pane(Pane::Right);
 
-    // Horizontal layout with shares: 1 | 8 | 1 (10% | 80% | 10%)
     let mut linear =
         egui_tiles::Linear::new(egui_tiles::LinearDir::Horizontal, vec![left, center, right]);
     linear.shares.set_share(left, 1.0);
@@ -32,7 +32,8 @@ fn create_tree() -> egui_tiles::Tree<Pane> {
 
 /// Defines how panes are rendered and their behavior.
 struct TreeBehavior<'a> {
-    snarl: &'a mut Snarl<EditorNode>,
+    snarl: &'a mut Snarl<SimNode>,
+    sim_status: &'a str,
 }
 
 impl egui_tiles::Behavior<Pane> for TreeBehavior<'_> {
@@ -55,10 +56,13 @@ impl egui_tiles::Behavior<Pane> for TreeBehavior<'_> {
                 SnarlWidget::new()
                     .id(egui::Id::new("editor-snarl"))
                     .style(nodes::default_style())
-                    .show(self.snarl, &mut EditorViewer, ui);
+                    .show(self.snarl, &mut SimViewer, ui);
             }
-            Pane::Left | Pane::Right => {
-                ui.label("hello, world");
+            Pane::Left => {
+                show_node_library(ui, self.snarl);
+            }
+            Pane::Right => {
+                ui.label(format!("Status: {}", self.sim_status));
             }
         }
 
@@ -89,7 +93,10 @@ impl egui_tiles::Behavior<Pane> for TreeBehavior<'_> {
 #[serde(default)]
 pub struct TemplateApp {
     tree: egui_tiles::Tree<Pane>,
-    snarl: Snarl<EditorNode>,
+    snarl: Snarl<SimNode>,
+    sim_config: SimConfig,
+    #[serde(skip)]
+    sim_status: String,
 }
 
 impl Default for TemplateApp {
@@ -97,6 +104,8 @@ impl Default for TemplateApp {
         Self {
             tree: create_tree(),
             snarl: Snarl::new(),
+            sim_config: SimConfig::default(),
+            sim_status: "Ready".to_owned(),
         }
     }
 }
@@ -104,8 +113,6 @@ impl Default for TemplateApp {
 impl TemplateApp {
     /// Called once before the first frame.
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        // Load previous app state (if any).
-        // Note that you must enable the `persistence` feature for this to work.
         if let Some(storage) = cc.storage {
             eframe::get_value(storage, eframe::APP_KEY).unwrap_or_default()
         } else {
@@ -133,6 +140,38 @@ impl eframe::App for TemplateApp {
                     });
                     ui.add_space(16.0);
                 }
+
+                // Simulation controls
+                ui.separator();
+                ui.label("t₀:");
+                ui.add(
+                    egui::DragValue::new(&mut self.sim_config.t_start)
+                        .speed(0.01)
+                        .range(0.0..=self.sim_config.t_end),
+                );
+                ui.label("t₁:");
+                ui.add(
+                    egui::DragValue::new(&mut self.sim_config.t_end)
+                        .speed(0.01)
+                        .range(self.sim_config.t_start..=100.0),
+                );
+
+                if ui.button("▶ Simulate").clicked() {
+                    match crate::simulation::solver::run_simulation(
+                        &mut self.snarl,
+                        &self.sim_config,
+                    ) {
+                        Ok(()) => {
+                            self.sim_status = "Simulation complete".to_owned();
+                        }
+                        Err(e) => {
+                            self.sim_status = format!("Error: {e}");
+                            log::error!("Simulation failed: {e}");
+                        }
+                    }
+                }
+
+                ui.add_space(8.0);
                 egui::widgets::global_theme_preference_buttons(ui);
             });
         });
@@ -140,8 +179,46 @@ impl eframe::App for TemplateApp {
         egui::CentralPanel::default().show(ctx, |ui| {
             let mut behavior = TreeBehavior {
                 snarl: &mut self.snarl,
+                sim_status: &self.sim_status,
             };
             self.tree.ui(&mut behavior, ui);
         });
+    }
+}
+
+/// Renders the node library in the left pane.
+fn show_node_library(ui: &mut egui::Ui, snarl: &mut Snarl<SimNode>) {
+    ui.heading("Nodes");
+    ui.separator();
+
+    let center = egui::pos2(0.0, 0.0);
+    let entries: &[(&str, SimNode)] = &[
+        (
+            "Constant",
+            SimNode::Constant(nodes::constant::ConstantNode::default()),
+        ),
+        (
+            "PMSM Electrical",
+            SimNode::Electrical(nodes::electrical::ElectricalNode::default()),
+        ),
+        (
+            "Torque Calculator",
+            SimNode::Torque(nodes::torque::TorqueNode::default()),
+        ),
+        (
+            "Mechanical Dynamics",
+            SimNode::Mechanical(nodes::mechanical::MechanicalNode::default()),
+        ),
+        (
+            "Inverse Park",
+            SimNode::InversePark(nodes::park::InverseParkNode::default()),
+        ),
+        ("Plot", SimNode::Plot(nodes::plot::PlotNode::default())),
+    ];
+
+    for (label, template) in entries {
+        if ui.button(*label).clicked() {
+            snarl.insert_node(center, template.clone());
+        }
     }
 }

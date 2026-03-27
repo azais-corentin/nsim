@@ -11,9 +11,11 @@ all-features = true
 targets = ["x86_64-unknown-linux-gnu", "wasm32-unknown-unknown"]
 
 [dependencies]
+diffsol = { version = "0.10.4", default-features = false, features = ["faer", "nalgebra"] }
 eframe = { version = "0.33", default-features = false, features = ["accesskit", "default_fonts", "glow", "persistence", "wayland", "x11"] }
 egui = "0.33"
 egui-snarl = { version = "0.9.0", features = ["serde"] }
+egui_plot = "0.34.0"
 egui_tiles = { version = "0.14.1", features = ["serde"] }
 log = "0.4.29"
 
@@ -28,6 +30,7 @@ env_logger = "0.11.10"
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen-futures = "0.4.64"
 web-sys = "0.3.91" # to access the DOM (to hide the loading text)
+getrandom = { version = "0.3", features = ["wasm_js"] }
 
 [profile.release]
 opt-level = 2 # fast and small wasm
@@ -96,7 +99,7 @@ doc_comment_double_space_linebreaks = "warn"
 doc_link_with_quotes = "warn"
 doc_markdown = "warn"
 elidable_lifetime_names = "warn"
-empty_enum = "warn"
+empty_enums = "warn"
 empty_enum_variants_with_brackets = "warn"
 empty_line_after_outer_attr = "warn"
 enum_glob_use = "warn"
