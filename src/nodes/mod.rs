@@ -247,13 +247,13 @@ pub fn default_style() -> SnarlStyle {
     SnarlStyle {
         node_layout: Some(NodeLayout::coil()),
         pin_placement: Some(PinPlacement::Edge),
-        pin_size: Some(7.0),
+        pin_size: Some(10.0),
         bg_pattern: Some(BackgroundPattern::Grid(Grid::new(
             egui::Vec2::new(20.0, 20.0),
             0.0,
         ))),
         node_frame: Some(egui::Frame {
-            inner_margin: egui::Margin::same(8),
+            inner_margin: egui::Margin::same(10),
             outer_margin: egui::Margin {
                 left: 0,
                 right: 0,
@@ -261,8 +261,8 @@ pub fn default_style() -> SnarlStyle {
                 bottom: 4,
             },
             corner_radius: egui::CornerRadius::same(4),
-            fill: Color32::from_gray(30),
-            stroke: egui::Stroke::NONE,
+            fill: Color32::from_gray(25),
+            stroke: egui::Stroke::new(1.0, Color32::from_gray(65)),
             shadow: egui::Shadow::NONE,
         }),
         bg_frame: Some(egui::Frame {
@@ -273,6 +273,8 @@ pub fn default_style() -> SnarlStyle {
             stroke: egui::Stroke::NONE,
             shadow: egui::Shadow::NONE,
         }),
+        wire_width: Some(3.0),
+        bg_pattern_stroke: Some(egui::Stroke::new(0.5, Color32::from_gray(30))),
         ..SnarlStyle::new()
     }
 }
@@ -324,6 +326,39 @@ impl SnarlViewer<SimNode> for SimViewer {
 
     fn title(&mut self, node: &SimNode) -> String {
         node.title().to_owned()
+    }
+
+    fn show_header(
+        &mut self,
+        node: NodeId,
+        _inputs: &[InPin],
+        _outputs: &[OutPin],
+        ui: &mut Ui,
+        snarl: &mut Snarl<SimNode>,
+    ) {
+        let title = self.title(&snarl[node]);
+        let font = egui::FontId::proportional(14.0);
+        let text_size = ui
+            .painter()
+            .layout_no_wrap(title.clone(), font.clone(), Color32::WHITE)
+            .size();
+        let (rect, _) = ui.allocate_exact_size(text_size, egui::Sense::hover());
+        // Dark shadow behind text for readability on colored headers
+        ui.painter().text(
+            rect.min + egui::vec2(1.0, 1.0),
+            egui::Align2::LEFT_TOP,
+            &title,
+            font.clone(),
+            Color32::from_black_alpha(160),
+        );
+        // White foreground text
+        ui.painter().text(
+            rect.min,
+            egui::Align2::LEFT_TOP,
+            &title,
+            font,
+            Color32::WHITE,
+        );
     }
 
     fn inputs(&mut self, node: &SimNode) -> usize {
