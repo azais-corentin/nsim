@@ -82,7 +82,6 @@ impl InverseParkNode {
     }
 }
 
-
 /// Transforms stationary ABC three-phase signals into d/q rotating-frame signals.
 ///
 /// This is the forward Park transform, the inverse of [`InverseParkNode`].
@@ -163,7 +162,10 @@ mod tests {
     use super::{InverseParkNode, ParkNode};
 
     /// Roundtrip: InversePark(d,q,θ) → ABC → Park(ABC,θ) should recover (d,q).
-    #[expect(clippy::indexing_slicing, reason = "test assertions with known-length slices")]
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "test assertions with known-length slices"
+    )]
     #[test]
     fn park_inverse_park_roundtrip() {
         let n = 50;

@@ -7,9 +7,10 @@
 use egui::Color32;
 
 /// The kind of data a port carries.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum PortType {
     /// A constant scalar parameter (`f64`).
+    #[default]
     Scalar,
     /// A time-series signal: `[(t, value), ...]`.
     Signal,

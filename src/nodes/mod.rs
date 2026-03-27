@@ -92,10 +92,7 @@ impl SimNode {
                 .iter()
                 .map(|(_, t)| *t)
                 .collect(),
-            Self::Park(_) => ParkNode::input_ports()
-                .iter()
-                .map(|(_, t)| *t)
-                .collect(),
+            Self::Park(_) => ParkNode::input_ports().iter().map(|(_, t)| *t).collect(),
             Self::Plot(p) => p.input_ports().iter().map(|(_, t)| *t).collect(),
         }
     }
@@ -103,10 +100,7 @@ impl SimNode {
     /// Declared port types for each output pin.
     fn output_port_types(&self) -> Vec<PortType> {
         match self {
-            Self::Constant(_) => ConstantNode::output_ports()
-                .iter()
-                .map(|(_, t)| *t)
-                .collect(),
+            Self::Constant(c) => c.output_ports().iter().map(|(_, t)| *t).collect(),
             Self::Electrical(_) => ElectricalNode::output_ports()
                 .iter()
                 .map(|(_, t)| *t)
@@ -120,10 +114,7 @@ impl SimNode {
                 .iter()
                 .map(|(_, t)| *t)
                 .collect(),
-            Self::Park(_) => ParkNode::output_ports()
-                .iter()
-                .map(|(_, t)| *t)
-                .collect(),
+            Self::Park(_) => ParkNode::output_ports().iter().map(|(_, t)| *t).collect(),
             Self::Plot(_) => PlotNode::output_ports().iter().map(|(_, t)| *t).collect(),
         }
     }
@@ -154,9 +145,7 @@ impl SimNode {
             Self::InversePark(_) => InverseParkNode::input_ports()
                 .get(input)
                 .map_or("?", |(n, _)| n),
-            Self::Park(_) => ParkNode::input_ports()
-                .get(input)
-                .map_or("?", |(n, _)| n),
+            Self::Park(_) => ParkNode::input_ports().get(input).map_or("?", |(n, _)| n),
             Self::Plot(_) => "data",
         }
     }
@@ -164,9 +153,7 @@ impl SimNode {
     /// Pin label for an output at the given index.
     fn output_label(&self, output: usize) -> &'static str {
         match self {
-            Self::Constant(_) => ConstantNode::output_ports()
-                .get(output)
-                .map_or("?", |(n, _)| n),
+            Self::Constant(c) => c.output_ports().get(output).map_or("?", |(n, _)| *n),
             Self::Electrical(_) => ElectricalNode::output_ports()
                 .get(output)
                 .map_or("?", |(n, _)| n),
@@ -179,9 +166,7 @@ impl SimNode {
             Self::InversePark(_) => InverseParkNode::output_ports()
                 .get(output)
                 .map_or("?", |(n, _)| n),
-            Self::Park(_) => ParkNode::output_ports()
-                .get(output)
-                .map_or("?", |(n, _)| n),
+            Self::Park(_) => ParkNode::output_ports().get(output).map_or("?", |(n, _)| n),
             Self::Plot(_) => PlotNode::output_ports().get(output).map_or("?", |(n, _)| n),
         }
     }
@@ -210,6 +195,7 @@ impl SimNode {
             (Self::InversePark(p), 0) => p.output_f_abc.as_ref(),
             (Self::Park(p), 0) => p.output_f_d.as_ref(),
             (Self::Park(p), 1) => p.output_f_q.as_ref(),
+            (Self::Constant(c), 0) => c.output_port_value.as_ref(),
             _ => None,
         }
     }
@@ -239,6 +225,19 @@ impl SimNode {
             Self::InversePark(n) => n.custom_size = val,
             Self::Park(n) => n.custom_size = val,
             Self::Plot(n) => n.custom_size = val,
+        }
+    }
+
+    /// Clears the user-defined node size override, reverting to auto-layout.
+    pub fn clear_custom_size(&mut self) {
+        match self {
+            Self::Constant(n) => n.custom_size = None,
+            Self::Electrical(n) => n.custom_size = None,
+            Self::Torque(n) => n.custom_size = None,
+            Self::Mechanical(n) => n.custom_size = None,
+            Self::InversePark(n) => n.custom_size = None,
+            Self::Park(n) => n.custom_size = None,
+            Self::Plot(n) => n.custom_size = None,
         }
     }
 }
@@ -290,8 +289,17 @@ pub struct SimViewer;
 
 impl SnarlViewer<SimNode> for SimViewer {
     fn connect(&mut self, from: &OutPin, to: &InPin, snarl: &mut Snarl<SimNode>) {
-        let out_type = snarl[from.id.node].output_port_type(from.id.output);
         let in_type = snarl[to.id.node].input_port_type(to.id.input);
+
+        // If the source is a Constant, adapt its output type to match the destination.
+        if let SimNode::Constant(c) = &mut snarl[from.id.node]
+            && let Some(in_t) = in_type
+        {
+            c.adapt_output_type(in_t);
+        }
+
+        // Re-read output type after potential adaptation.
+        let out_type = snarl[from.id.node].output_port_type(from.id.output);
 
         // Check standard type compatibility, with a special case for Plot
         // which accepts any plottable data (Signal or Vector).
@@ -349,9 +357,17 @@ impl SnarlViewer<SimNode> for SimViewer {
             .output_port_type(pin.id.output)
             .unwrap_or(PortType::Signal);
 
-        // For Constant nodes, show an editable drag value.
+        // For Constant nodes, show an editable drag value inline with the pin.
+        // Vector mode shows only a label here; the per-phase values go in the body.
         if let SimNode::Constant(c) = node {
-            ui.add(egui::DragValue::new(&mut c.value).speed(0.1));
+            match c.output_type {
+                PortType::Vector => {
+                    ui.label("value");
+                }
+                PortType::Scalar | PortType::Signal => {
+                    ui.add(egui::DragValue::new(&mut c.value).speed(0.1));
+                }
+            }
         } else {
             ui.label(label);
         }
@@ -362,10 +378,15 @@ impl SnarlViewer<SimNode> for SimViewer {
     }
 
     fn has_body(&mut self, node: &SimNode) -> bool {
-        matches!(
-            node,
-            SimNode::Electrical(_) | SimNode::Mechanical(_) | SimNode::Torque(_) | SimNode::Plot(_)
-        )
+        match node {
+            SimNode::Electrical(_)
+            | SimNode::Mechanical(_)
+            | SimNode::Torque(_)
+            | SimNode::Plot(_) => true,
+            // Vector-mode Constants need a body for the per-phase editors.
+            SimNode::Constant(c) => c.output_type == PortType::Vector,
+            _ => false,
+        }
     }
 
     fn show_body(
@@ -428,7 +449,19 @@ impl SnarlViewer<SimNode> for SimViewer {
                         param_row(ui, "L_q (H)", &mut t.l_q);
                     });
             }
-            SimNode::Constant(_) | SimNode::InversePark(_) | SimNode::Park(_) | SimNode::Plot(_) => {}
+            SimNode::Constant(c) if c.output_type == PortType::Vector => {
+                egui::Grid::new(ui.id().with("const_vec"))
+                    .num_columns(2)
+                    .show(ui, |ui| {
+                        param_row(ui, "a", &mut c.value);
+                        param_row(ui, "b", &mut c.value_b);
+                        param_row(ui, "c", &mut c.value_c);
+                    });
+            }
+            SimNode::InversePark(_)
+            | SimNode::Park(_)
+            | SimNode::Plot(_)
+            | SimNode::Constant(_) => {}
         }
     }
 
@@ -503,17 +536,26 @@ impl SnarlViewer<SimNode> for SimViewer {
                 let in_type = snarl[src_pin.node].input_port_type(src_pin.input);
 
                 for (label, template) in node_palette() {
+                    // Constants can adapt to any type, so always compatible.
+                    let is_constant = matches!(template, SimNode::Constant(_));
                     let compatible_output = template
                         .output_port_types()
                         .iter()
                         .enumerate()
                         .find(|(_, t)| in_type.is_some_and(|it| it.is_compatible_with(**t)))
-                        .map(|(i, _)| i);
+                        .map(|(i, _)| i)
+                        .or(if is_constant { Some(0) } else { None });
 
                     if let Some(output_idx) = compatible_output
                         && ui.button(label).clicked()
                     {
                         let new_node = snarl.insert_node(pos, template);
+                        // Adapt Constant output type to match the destination input.
+                        if let Some(in_t) = in_type
+                            && let SimNode::Constant(c) = &mut snarl[new_node]
+                        {
+                            c.adapt_output_type(in_t);
+                        }
                         let dst_pin = OutPinId {
                             node: new_node,
                             output: output_idx,
@@ -544,6 +586,10 @@ impl SnarlViewer<SimNode> for SimViewer {
             && ui.button("Add Input").clicked()
         {
             p.add_input();
+            ui.close();
+        }
+        if snarl[node].custom_size().is_some() && ui.button("Reset Size").clicked() {
+            snarl[node].clear_custom_size();
             ui.close();
         }
         if ui.button("Remove").clicked() {
