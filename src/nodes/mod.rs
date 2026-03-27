@@ -412,16 +412,8 @@ impl SnarlViewer<SimNode> for SimViewer {
             .with_wire_style(wire_style())
     }
 
-    fn has_body(&mut self, node: &SimNode) -> bool {
-        match node {
-            SimNode::Electrical(_)
-            | SimNode::Mechanical(_)
-            | SimNode::Torque(_)
-            | SimNode::Plot(_) => true,
-            // Vector-mode Constants need a body for the per-phase editors.
-            SimNode::Constant(c) => c.output_type == PortType::Vector,
-            _ => false,
-        }
+    fn has_body(&mut self, _node: &SimNode) -> bool {
+        true
     }
 
     fn show_body(
@@ -443,6 +435,11 @@ impl SnarlViewer<SimNode> for SimViewer {
             let plot_height = custom.map_or(200.0, |s| s.y.max(80.0));
             show_plot_inline(node, _inputs, ui, snarl, plot_height);
             return;
+        }
+
+        // Apply height constraint from custom_size for non-Plot nodes.
+        if let Some(size) = snarl[node].custom_size() {
+            ui.set_min_height(size.y.max(40.0));
         }
 
         match &mut snarl[node] {
