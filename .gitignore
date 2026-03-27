@@ -1,6 +1,12 @@
+.devenv*
+.direnv
 .DS_Store
+.envrc
 .lycheecache
+.pre-commit-config.yaml
 .secrets
+devenv.local.nix
+devenv.local.yaml
 dist
 target
 target_ra
