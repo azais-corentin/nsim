@@ -21,6 +21,9 @@ pub struct SimConfig {
     pub rtol: f64,
     /// Absolute tolerance for the adaptive BDF solver.
     pub atol: f64,
+    /// Maximum time between output points (seconds). Controls plot smoothness.
+    /// The solver output is resampled onto a uniform grid with this spacing.
+    pub output_dt: f64,
 }
 
 impl Default for SimConfig {
@@ -30,6 +33,7 @@ impl Default for SimConfig {
             t_end: 2.0,
             rtol: 1e-6,
             atol: 1e-8,
+            output_dt: 0.001,
         }
     }
 }

@@ -164,6 +164,40 @@ fn interpolate_vector(signal: &[[f64; 4]], t: f64) -> [f64; 3] {
     ]
 }
 
+/// Resample a `[t, value]` series onto a uniform time grid with spacing `dt`.
+///
+/// If the raw series already has at least as many points as the uniform grid
+/// would produce, the solver captured fine-grained dynamics — return as-is.
+fn resample_signal(series: &[[f64; 2]], t_start: f64, t_end: f64, dt: f64) -> Vec<[f64; 2]> {
+    let n_uniform = ((t_end - t_start) / dt).ceil() as usize + 1;
+    if series.len() >= n_uniform {
+        return series.to_vec();
+    }
+    (0..n_uniform)
+        .map(|i| {
+            let t = (t_start + dt * i as f64).min(t_end);
+            [t, interpolate_signal(series, t)]
+        })
+        .collect()
+}
+
+/// Resample a `[t, a, b, c]` 3-phase series onto a uniform time grid with spacing `dt`.
+///
+/// Same density-check logic as [`resample_signal`].
+fn resample_vector(series: &[[f64; 4]], t_start: f64, t_end: f64, dt: f64) -> Vec<[f64; 4]> {
+    let n_uniform = ((t_end - t_start) / dt).ceil() as usize + 1;
+    if series.len() >= n_uniform {
+        return series.to_vec();
+    }
+    (0..n_uniform)
+        .map(|i| {
+            let t = (t_start + dt * i as f64).min(t_end);
+            let [a, b, c] = interpolate_vector(series, t);
+            [t, a, b, c]
+        })
+        .collect()
+}
+
 /// An ODE forcing input resolved from the graph: constant or time-varying.
 #[derive(Clone)]
 enum ExternalInput {
@@ -645,9 +679,20 @@ pub fn run_simulation(snarl: &mut Snarl<SimNode>, config: &SimConfig) -> Result<
             .collect();
 
         if let Some(SimNode::InversePark(park)) = snarl.get_node_mut(pid) {
+            let f_abc_series = resample_vector(&f_abc_series, config.t_start, config.t_end, config.output_dt);
             park.output_f_abc = Some(PortValue::Vector(f_abc_series));
         }
     }
+
+    // ── 11b. Resample all series onto a uniform output grid ──────────────
+    let dt = config.output_dt;
+    let t0 = config.t_start;
+    let t1 = config.t_end;
+    let i_d_series = resample_signal(&i_d_series, t0, t1, dt);
+    let i_q_series = resample_signal(&i_q_series, t0, t1, dt);
+    let omega_m_series = resample_signal(&omega_m_series, t0, t1, dt);
+    let theta_e_series = resample_signal(&theta_e_series, t0, t1, dt);
+    let t_e_series = resample_signal(&t_e_series, t0, t1, dt);
 
     // ── 12. Write time-series results back into the graph nodes ──────────────
     if let Some(SimNode::Electrical(e)) = snarl.get_node_mut(elec_id) {
@@ -666,21 +711,22 @@ pub fn run_simulation(snarl: &mut Snarl<SimNode>, config: &SimConfig) -> Result<
         t.output_t_e = Some(PortValue::Signal(t_e_series));
     }
 
-    // ── 12b. Re-generate constant Signal/Vector outputs at ODE time resolution ─
-    // Step 7 pre-generated these on a synthetic grid (`ts_pre`). Now that we
-    // have the adaptive-step time vector from the solver, regenerate for
-    // plotting fidelity.
+    // ── 12b. Re-generate constant Signal/Vector outputs on the uniform output grid ─
+    // Step 7 pre-generated these on a synthetic grid (`ts_pre`). Now regenerate
+    // on the same uniform grid used for ODE outputs so all series align.
+    let n_out = ((t1 - t0) / dt).ceil() as usize + 1;
+    let ts_uniform: Vec<f64> = (0..n_out).map(|i| (t0 + dt * i as f64).min(t1)).collect();
     #[expect(clippy::shadow_unrelated, reason = "`b` is local to each scope")]
     for &id in &all_ids {
         if let Some(SimNode::Constant(c)) = snarl.get_node(id) {
             let port_value = match c.output_type {
                 PortType::Signal => {
-                    let series: Vec<[f64; 2]> = ts.iter().map(|&t| [t, c.value]).collect();
+                    let series: Vec<[f64; 2]> = ts_uniform.iter().map(|&t| [t, c.value]).collect();
                     Some(PortValue::Signal(series))
                 }
                 PortType::Vector => {
                     let (a, b, cv) = (c.value, c.value_b, c.value_c);
-                    let series: Vec<[f64; 4]> = ts.iter().map(|&t| [t, a, b, cv]).collect();
+                    let series: Vec<[f64; 4]> = ts_uniform.iter().map(|&t| [t, a, b, cv]).collect();
                     Some(PortValue::Vector(series))
                 }
                 PortType::Scalar => None, // handled by get_constant_input
@@ -704,8 +750,8 @@ pub fn run_simulation(snarl: &mut Snarl<SimNode>, config: &SimConfig) -> Result<
             let (f_d_series, f_q_series) = crate::nodes::park::ParkNode::compute(&f_abc, &theta_e);
 
             if let Some(SimNode::Park(park)) = snarl.get_node_mut(pid) {
-                park.output_f_d = Some(PortValue::Signal(f_d_series));
-                park.output_f_q = Some(PortValue::Signal(f_q_series));
+                park.output_f_d = Some(PortValue::Signal(resample_signal(&f_d_series, t0, t1, dt)));
+                park.output_f_q = Some(PortValue::Signal(resample_signal(&f_q_series, t0, t1, dt)));
             }
         }
     }
@@ -810,6 +856,7 @@ mod tests {
             t_end: 0.5,
             rtol: 1e-6,
             atol: 1e-8,
+            ..SimConfig::default()
         };
 
         run_simulation(&mut snarl, &config).expect("simulation should succeed");
@@ -979,6 +1026,7 @@ mod tests {
             t_end: 0.1,
             rtol: 1e-6,
             atol: 1e-8,
+            ..SimConfig::default()
         };
 
         run_simulation(&mut snarl, &config).expect("simulation should succeed");
@@ -1107,6 +1155,7 @@ mod tests {
             t_end: 0.5,
             rtol: 1e-6,
             atol: 1e-8,
+            ..SimConfig::default()
         };
 
         run_simulation(&mut snarl, &config).expect("simulation should succeed");
@@ -1306,6 +1355,7 @@ mod tests {
             t_end: 0.5,
             rtol: 1e-6,
             atol: 1e-8,
+            ..SimConfig::default()
         };
 
         run_simulation(&mut snarl, &config).expect("simulation should succeed");

@@ -155,6 +155,14 @@ impl eframe::App for TemplateApp {
                         .speed(0.01)
                         .range(self.sim_config.t_start..=100.0),
                 );
+                ui.label("Δt:");
+                ui.add(
+                    egui::DragValue::new(&mut self.sim_config.output_dt)
+                        .speed(0.0001)
+                        .range(0.0001..=1.0)
+                        .suffix(" s")
+                        .max_decimals(4),
+                );
 
                 if ui.button("▶ Simulate").clicked() {
                     match crate::simulation::solver::run_simulation(
