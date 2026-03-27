@@ -275,6 +275,7 @@ pub fn default_style() -> SnarlStyle {
         }),
         wire_width: Some(3.0),
         bg_pattern_stroke: Some(egui::Stroke::new(0.5, Color32::from_gray(30))),
+        crisp_magnified_text: Some(true),
         ..SnarlStyle::new()
     }
 }
@@ -337,27 +338,11 @@ impl SnarlViewer<SimNode> for SimViewer {
         snarl: &mut Snarl<SimNode>,
     ) {
         let title = self.title(&snarl[node]);
-        let font = egui::FontId::proportional(14.0);
-        let text_size = ui
-            .painter()
-            .layout_no_wrap(title.clone(), font.clone(), Color32::WHITE)
-            .size();
-        let (rect, _) = ui.allocate_exact_size(text_size, egui::Sense::hover());
-        // Dark shadow behind text for readability on colored headers
-        ui.painter().text(
-            rect.min + egui::vec2(1.0, 1.0),
-            egui::Align2::LEFT_TOP,
-            &title,
-            font.clone(),
-            Color32::from_black_alpha(160),
-        );
-        // White foreground text
-        ui.painter().text(
-            rect.min,
-            egui::Align2::LEFT_TOP,
-            &title,
-            font,
-            Color32::WHITE,
+        ui.label(
+            egui::RichText::new(title)
+                .size(16.0)
+                .strong()
+                .color(Color32::WHITE),
         );
     }
 
@@ -638,7 +623,9 @@ impl SnarlViewer<SimNode> for SimViewer {
         _outputs: &[OutPin],
         snarl: &Snarl<SimNode>,
     ) -> egui::Frame {
-        frame.fill(snarl[node].header_color())
+        frame
+            .fill(snarl[node].header_color())
+            .inner_margin(egui::Margin::symmetric(8, 4))
     }
 
     fn has_footer(&mut self, _node: &SimNode) -> bool {
