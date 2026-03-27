@@ -62,11 +62,11 @@ impl ElectricalNode {
         "PMSM Electrical"
     }
 
-    /// Input port descriptors: scalar voltages and mechanical speed signal.
+    /// Input port descriptors: voltage signals and mechanical speed signal.
     pub fn input_ports() -> &'static [(&'static str, PortType)] {
         &[
-            ("v_d", PortType::Scalar),
-            ("v_q", PortType::Scalar),
+            ("v_d", PortType::Signal),
+            ("v_q", PortType::Signal),
             ("ω_m", PortType::Signal),
         ]
     }

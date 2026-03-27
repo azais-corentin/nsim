@@ -44,20 +44,14 @@ const P_NP: usize = 4;
 const P_J: usize = 5;
 /// Parameter index: viscous-friction coefficient `B`.
 const P_B: usize = 6;
-/// Parameter index: d-axis voltage `v_d`.
-const P_VD: usize = 7;
-/// Parameter index: q-axis voltage `v_q`.
-const P_VQ: usize = 8;
-/// Parameter index: load torque `T_L`.
-const P_TL: usize = 9;
 /// Parameter index: torque-equation pole-pair count `N_p`.
-const P_T_NP: usize = 10;
+const P_T_NP: usize = 7;
 /// Parameter index: torque-equation flux linkage `λ_m`.
-const P_T_LAM: usize = 11;
+const P_T_LAM: usize = 8;
 /// Parameter index: torque-equation d-axis inductance `L_d`.
-const P_T_LD: usize = 12;
+const P_T_LD: usize = 9;
 /// Parameter index: torque-equation q-axis inductance `L_q`.
-const P_T_LQ: usize = 13;
+const P_T_LQ: usize = 10;
 
 /// Total number of states in the coupled PMSM ODE system.
 const N_STATES: usize = 4;
@@ -101,6 +95,72 @@ fn get_vector_input(snarl: &Snarl<SimNode>, node: NodeId, input: usize) -> Optio
         PortValue::Vector(data) => Some(data.clone()),
         _ => None,
     }
+}
+
+/// Linearly interpolate a `[t, value]` time-series at time `t`.
+///
+/// Clamps to boundary values outside the series range.
+/// Returns `0.0` for an empty series.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "indices are bounded by early-return guards: is_empty, len==1, boundary clamps, and partition_point"
+)]
+fn interpolate_signal(signal: &[[f64; 2]], t: f64) -> f64 {
+    if signal.is_empty() {
+        return 0.0;
+    }
+    if signal.len() == 1 || t <= signal[0][0] {
+        return signal[0][1];
+    }
+    let last = signal.len() - 1;
+    if t >= signal[last][0] {
+        return signal[last][1];
+    }
+    // Binary search for the bracketing interval.
+    let idx = signal.partition_point(|s| s[0] < t);
+    // idx > 0 because t > signal[0][0], and idx <= last because t < signal[last][0].
+    let (t0, v0) = (signal[idx - 1][0], signal[idx - 1][1]);
+    let (t1, v1) = (signal[idx][0], signal[idx][1]);
+    let frac = if (t1 - t0).abs() < f64::EPSILON {
+        0.0
+    } else {
+        (t - t0) / (t1 - t0)
+    };
+    v0 + frac * (v1 - v0)
+}
+
+/// An ODE forcing input resolved from the graph: constant or time-varying.
+#[derive(Clone)]
+enum ExternalInput {
+    /// Fixed value (from a `ConstantNode` or default).
+    Constant(f64),
+    /// Time-varying signal to be interpolated at each ODE step.
+    Signal(Vec<[f64; 2]>),
+}
+
+impl ExternalInput {
+    /// Evaluate the input at time `t`.
+    fn at(&self, t: f64) -> f64 {
+        match self {
+            Self::Constant(v) => *v,
+            Self::Signal(s) => interpolate_signal(s, t),
+        }
+    }
+}
+
+/// Resolve an external input pin: try Constant first, then Signal, then default.
+///
+/// Checking `get_constant_input` first preserves backward compatibility with
+/// saved graphs where `ConstantNode`s have `output_type: Scalar` wired to
+/// now-Signal pins.
+fn resolve_external_input(snarl: &Snarl<SimNode>, node: NodeId, input: usize) -> ExternalInput {
+    if let Some(v) = get_constant_input(snarl, node, input) {
+        return ExternalInput::Constant(v);
+    }
+    if let Some(data) = get_signal_input(snarl, node, input) {
+        return ExternalInput::Signal(data);
+    }
+    ExternalInput::Constant(0.0)
 }
 
 /// Traverse the graph, solve the PMSM ODE system, and write results into node outputs.
@@ -210,18 +270,69 @@ pub fn run_simulation(snarl: &mut Snarl<SimNode>, config: &SimConfig) -> Result<
         (n_p_elec, lambda_m, l_d, l_q)
     };
 
-    // ── 7. Read voltage and load-torque sources from connected Constants ─────
-    // ElectricalNode pin layout: 0 = v_d (Scalar), 1 = v_q (Scalar), 2 = ω_m (Signal)
-    let v_d = get_constant_input(snarl, elec_id, 0).unwrap_or(0.0);
-    let v_q = get_constant_input(snarl, elec_id, 1).unwrap_or(0.0);
-    // MechanicalNode pin layout: 0 = T_e (Signal), 1 = T_L (Scalar)
-    let t_l = get_constant_input(snarl, mech_id, 1).unwrap_or(0.0);
+    // ── 7. Pre-generate Constant Signal/Vector outputs ─────────────────────────
+    // Constants adapted to Signal or Vector mode need time-series data
+    // populated *before* we resolve ODE external inputs, so that
+    // `get_signal_input` can read from them (and by extension, the Park
+    // transform can consume them).
+    let n_pre = 1000_usize;
+    let ts_pre: Vec<f64> = (0..n_pre)
+        .map(|i| {
+            config.t_start + (config.t_end - config.t_start) * (i as f64) / (n_pre as f64 - 1.0)
+        })
+        .collect();
+    for &id in &all_ids {
+        if let Some(SimNode::Constant(c)) = snarl.get_node(id) {
+            let port_value = match c.output_type {
+                PortType::Signal => {
+                    let series: Vec<[f64; 2]> = ts_pre.iter().map(|&t| [t, c.value]).collect();
+                    Some(PortValue::Signal(series))
+                }
+                PortType::Vector => {
+                    let (a, b_val, cv) = (c.value, c.value_b, c.value_c);
+                    let series: Vec<[f64; 4]> = ts_pre.iter().map(|&t| [t, a, b_val, cv]).collect();
+                    Some(PortValue::Vector(series))
+                }
+                PortType::Scalar => None,
+            };
+            if let Some(pv) = port_value
+                && let Some(SimNode::Constant(c)) = snarl.get_node_mut(id)
+            {
+                c.output_port_value = Some(pv);
+            }
+        }
+    }
+
+    // ── 7b. Pre-compute Park transform if inputs are available ─────────────
+    // This populates Park f_d / f_q so they can feed Electrical v_d / v_q.
+    if let Some(pid) = park_id {
+        let f_abc = get_vector_input(snarl, pid, 0);
+        let theta_e = get_signal_input(snarl, pid, 1);
+
+        if let (Some(f_abc), Some(theta_e)) = (f_abc, theta_e) {
+            let (f_d_series, f_q_series) = crate::nodes::park::ParkNode::compute(&f_abc, &theta_e);
+
+            if let Some(SimNode::Park(park)) = snarl.get_node_mut(pid) {
+                park.output_f_d = Some(PortValue::Signal(f_d_series));
+                park.output_f_q = Some(PortValue::Signal(f_q_series));
+            }
+        }
+    }
+
+    // ── 7c. Resolve external ODE forcing inputs ─────────────────────────────
+    // ElectricalNode pin layout: 0 = v_d (Signal), 1 = v_q (Signal), 2 = ω_m (Signal)
+    let v_d_input = resolve_external_input(snarl, elec_id, 0);
+    let v_q_input = resolve_external_input(snarl, elec_id, 1);
+    // MechanicalNode pin layout: 0 = T_e (Signal), 1 = T_L (Signal)
+    let t_l_input = resolve_external_input(snarl, mech_id, 1);
 
     // Use pole-pair count from the Mechanical node throughout the ODE.
     let n_p = n_p_mech;
 
     // ── 8. Assemble parameter vector ─────────────────────────────────────────
     // Element order must match the P_* constants defined above.
+    // v_d, v_q, and T_L are no longer in the parameter vector — they are
+    // captured as `ExternalInput` values in the RHS closure.
     let p = vec![
         r_s,
         l_d,
@@ -229,10 +340,7 @@ pub fn run_simulation(snarl: &mut Snarl<SimNode>, config: &SimConfig) -> Result<
         lambda_m,
         n_p, // P_RS … P_NP
         j,
-        b,
-        v_d,
-        v_q,
-        t_l, // P_J  … P_TL
+        b, // P_J, P_B
         torque_n_p,
         torque_lambda_m,
         torque_l_d,
@@ -257,28 +365,37 @@ pub fn run_simulation(snarl: &mut Snarl<SimNode>, config: &SimConfig) -> Result<
         .p(p)
         .rhs_implicit(
             // ── RHS: compute time derivatives ──────────────────────────────
-            |x, p, _t, y| {
-                // Electromagnetic torque (used in the mechanical equation below)
-                let t_e = 1.5
-                    * p[P_T_NP]
-                    * (p[P_T_LAM] * x[S_IQ] + (p[P_T_LD] - p[P_T_LQ]) * x[S_ID] * x[S_IQ]);
+            {
+                let v_d_ext = v_d_input.clone();
+                let v_q_ext = v_q_input.clone();
+                let t_l_ext = t_l_input.clone();
+                move |x, p, t, y| {
+                    let v_d = v_d_ext.at(t);
+                    let v_q = v_q_ext.at(t);
+                    let t_l = t_l_ext.at(t);
 
-                // d-axis current
-                y[S_ID] = (1.0 / p[P_LD])
-                    * (p[P_VD] - p[P_RS] * x[S_ID] + p[P_NP] * x[S_WM] * p[P_LQ] * x[S_IQ]);
+                    // Electromagnetic torque (used in the mechanical equation below)
+                    let t_e = 1.5
+                        * p[P_T_NP]
+                        * (p[P_T_LAM] * x[S_IQ] + (p[P_T_LD] - p[P_T_LQ]) * x[S_ID] * x[S_IQ]);
 
-                // q-axis current
-                y[S_IQ] = (1.0 / p[P_LQ])
-                    * (p[P_VQ]
-                        - p[P_RS] * x[S_IQ]
-                        - p[P_NP] * x[S_WM] * p[P_LD] * x[S_ID]
-                        - p[P_NP] * x[S_WM] * p[P_LAM]);
+                    // d-axis current
+                    y[S_ID] = (1.0 / p[P_LD])
+                        * (v_d - p[P_RS] * x[S_ID] + p[P_NP] * x[S_WM] * p[P_LQ] * x[S_IQ]);
 
-                // Mechanical speed
-                y[S_WM] = (1.0 / p[P_J]) * (t_e - p[P_TL] - p[P_B] * x[S_WM]);
+                    // q-axis current
+                    y[S_IQ] = (1.0 / p[P_LQ])
+                        * (v_q
+                            - p[P_RS] * x[S_IQ]
+                            - p[P_NP] * x[S_WM] * p[P_LD] * x[S_ID]
+                            - p[P_NP] * x[S_WM] * p[P_LAM]);
 
-                // Electrical angle
-                y[S_TE] = p[P_NP] * x[S_WM];
+                    // Mechanical speed
+                    y[S_WM] = (1.0 / p[P_J]) * (t_e - t_l - p[P_B] * x[S_WM]);
+
+                    // Electrical angle
+                    y[S_TE] = p[P_NP] * x[S_WM];
+                }
             },
             // ── Jacobian-vector product J·v where J = ∂f/∂x ───────────────
             |x, p, _t, v, y| {
@@ -417,11 +534,11 @@ pub fn run_simulation(snarl: &mut Snarl<SimNode>, config: &SimConfig) -> Result<
         t.output_t_e = Some(PortValue::Signal(t_e_series));
     }
 
-    // ── 12b. Generate constant Signal/Vector outputs ─────────────────────────
-    // Constants that adapted to Signal or Vector mode need time-series data
-    // so downstream nodes (e.g. Park) can read them via get_signal_input /
-    // get_vector_input. Must run before any algebraic post-processing that
-    // reads from graph wires.
+    // ── 12b. Re-generate constant Signal/Vector outputs at ODE time resolution ─
+    // Step 7 pre-generated these on a synthetic grid (`ts_pre`). Now that we
+    // have the adaptive-step time vector from the solver, regenerate for
+    // plotting fidelity.
+    #[expect(clippy::shadow_unrelated, reason = "`b` is local to each scope")]
     for &id in &all_ids {
         if let Some(SimNode::Constant(c)) = snarl.get_node(id) {
             let port_value = match c.output_type {
@@ -444,9 +561,9 @@ pub fn run_simulation(snarl: &mut Snarl<SimNode>, config: &SimConfig) -> Result<
         }
     }
 
-    // ── 13. Forward Park transform if a Park node is present ─────────────────
-    // Reads the Vector (f_abc) and Signal (θ_e) from whatever nodes are
-    // connected to its inputs, then writes f_d and f_q back.
+    // ── 13. Re-compute Park transform at ODE time resolution ────────────────
+    // Step 7b pre-computed this for ODE input resolution. Re-run with
+    // actual data from connected nodes (which may now include ODE outputs).
     if let Some(pid) = park_id {
         let f_abc = get_vector_input(snarl, pid, 0);
         let theta_e = get_signal_input(snarl, pid, 1);
@@ -778,5 +895,152 @@ mod tests {
             panic!("expected Signal");
         };
         assert!(!f_d.is_empty(), "f_d series should be non-empty");
+    }
+
+    /// Verify that `ExternalInput::Signal` feeds the ODE correctly.
+    /// Constants adapted to `PortType::Signal` should produce time-series
+    /// that `resolve_external_input` picks up and interpolates during integration.
+    #[test]
+    fn signal_inputs_feed_ode() {
+        use crate::port::PortType;
+
+        let mut snarl: Snarl<SimNode> = Snarl::new();
+        let pos = egui::pos2(0.0, 0.0);
+
+        let elec_node = snarl.insert_node(pos, SimNode::Electrical(ElectricalNode::default()));
+        let mech_node = snarl.insert_node(pos, SimNode::Mechanical(MechanicalNode::default()));
+
+        // Constants adapted to Signal for v_d, v_q, T_L
+        let vd_node = snarl.insert_node(
+            pos,
+            SimNode::Constant(ConstantNode {
+                value: 0.0,
+                output_type: PortType::Signal,
+                ..ConstantNode::default()
+            }),
+        );
+        let vq_node = snarl.insert_node(
+            pos,
+            SimNode::Constant(ConstantNode {
+                value: 24.0,
+                output_type: PortType::Signal,
+                ..ConstantNode::default()
+            }),
+        );
+        let tl_node = snarl.insert_node(
+            pos,
+            SimNode::Constant(ConstantNode {
+                value: 0.0,
+                output_type: PortType::Signal,
+                ..ConstantNode::default()
+            }),
+        );
+
+        // Wire: v_d -> Electrical input 0
+        snarl.connect(
+            OutPinId {
+                node: vd_node,
+                output: 0,
+            },
+            InPinId {
+                node: elec_node,
+                input: 0,
+            },
+        );
+        // Wire: v_q -> Electrical input 1
+        snarl.connect(
+            OutPinId {
+                node: vq_node,
+                output: 0,
+            },
+            InPinId {
+                node: elec_node,
+                input: 1,
+            },
+        );
+        // Wire: T_L -> Mechanical input 1
+        snarl.connect(
+            OutPinId {
+                node: tl_node,
+                output: 0,
+            },
+            InPinId {
+                node: mech_node,
+                input: 1,
+            },
+        );
+
+        let config = SimConfig {
+            t_start: 0.0,
+            t_end: 0.5,
+            rtol: 1e-6,
+            atol: 1e-8,
+        };
+
+        run_simulation(&mut snarl, &config).expect("simulation should succeed");
+
+        // Verify outputs are populated
+        let SimNode::Electrical(elec) = snarl.get_node(elec_node).expect("elec node") else {
+            panic!("expected electrical node");
+        };
+        let PortValue::Signal(i_q) = elec.output_i_q.as_ref().expect("i_q output") else {
+            panic!("expected Signal");
+        };
+
+        // With v_q=24V via Signal, results should match the Scalar case
+        let last_i_q = i_q.last().expect("non-empty")[1];
+        assert!(
+            last_i_q.abs() > 0.01,
+            "i_q should be non-zero at end: {last_i_q}"
+        );
+
+        let SimNode::Mechanical(mech) = snarl.get_node(mech_node).expect("mech node") else {
+            panic!("expected mechanical node");
+        };
+        let PortValue::Signal(omega) = mech.output_omega_m.as_ref().expect("omega output") else {
+            panic!("expected Signal");
+        };
+        let last_omega = omega.last().expect("non-empty")[1];
+        assert!(
+            last_omega > 1.0,
+            "motor should be spinning: omega={last_omega}"
+        );
+
+        // The Signal-adapted constants should also have output_port_value populated
+        let SimNode::Constant(c_vq) = snarl.get_node(vq_node).expect("vq node") else {
+            panic!("expected constant node");
+        };
+        assert!(
+            c_vq.output_port_value.is_some(),
+            "Signal-adapted constant should have output"
+        );
+    }
+
+    #[test]
+    fn interpolate_signal_edge_cases() {
+        use super::interpolate_signal;
+
+        // Empty signal returns 0.0
+        assert_eq!(interpolate_signal(&[], 1.0), 0.0);
+
+        // Single point returns that value for any t
+        let single = [[5.0, 42.0]];
+        assert_eq!(interpolate_signal(&single, 0.0), 42.0);
+        assert_eq!(interpolate_signal(&single, 5.0), 42.0);
+        assert_eq!(interpolate_signal(&single, 100.0), 42.0);
+
+        // Clamps to boundaries
+        let series = [[0.0, 10.0], [1.0, 20.0], [2.0, 30.0]];
+        assert_eq!(interpolate_signal(&series, -1.0), 10.0);
+        assert_eq!(interpolate_signal(&series, 3.0), 30.0);
+
+        // Exact boundary values
+        let eps = 1e-12;
+        assert!((interpolate_signal(&series, 0.0) - 10.0).abs() < eps);
+        assert!((interpolate_signal(&series, 2.0) - 30.0).abs() < eps);
+
+        // Midpoint interpolation
+        assert!((interpolate_signal(&series, 0.5) - 15.0).abs() < eps);
+        assert!((interpolate_signal(&series, 1.5) - 25.0).abs() < eps);
     }
 }

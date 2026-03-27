@@ -10,7 +10,7 @@ use crate::port::{PortType, PortValue};
 
 /// ODE node representing the mechanical dynamics of a PMSM rotor.
 ///
-/// Inputs: electromagnetic torque `T_e` (Signal) and load torque `T_L` (Scalar).\
+/// Inputs: electromagnetic torque `T_e` (Signal) and load torque `T_L` (Signal).\
 /// Outputs: mechanical speed `ω_m` (Signal) and electrical angle `θ_e` (Signal).
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
@@ -52,7 +52,7 @@ impl Default for MechanicalNode {
 }
 
 /// Static input port descriptors: (name, type).
-const INPUT_PORTS: &[(&str, PortType)] = &[("T_e", PortType::Signal), ("T_L", PortType::Scalar)];
+const INPUT_PORTS: &[(&str, PortType)] = &[("T_e", PortType::Signal), ("T_L", PortType::Signal)];
 
 /// Static output port descriptors: (name, type).
 const OUTPUT_PORTS: &[(&str, PortType)] = &[("ω_m", PortType::Signal), ("θ_e", PortType::Signal)];
