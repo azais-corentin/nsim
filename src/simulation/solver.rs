@@ -75,6 +75,34 @@ fn get_constant_input(snarl: &Snarl<SimNode>, node: NodeId, input: usize) -> Opt
     Some(c.value)
 }
 
+/// Return the Signal time-series connected to a given input pin.
+///
+/// Returns `None` when the pin has no incoming wire or the connected output
+/// does not hold a [`PortValue::Signal`].
+fn get_signal_input(snarl: &Snarl<SimNode>, node: NodeId, input: usize) -> Option<Vec<[f64; 2]>> {
+    let pin = snarl.in_pin(InPinId { node, input });
+    let remote = pin.remotes.first()?;
+    let source = snarl.get_node(remote.node)?;
+    match source.output_value(remote.output)? {
+        PortValue::Signal(data) => Some(data.clone()),
+        _ => None,
+    }
+}
+
+/// Return the Vector (3-phase) time-series connected to a given input pin.
+///
+/// Returns `None` when the pin has no incoming wire or the connected output
+/// does not hold a [`PortValue::Vector`].
+fn get_vector_input(snarl: &Snarl<SimNode>, node: NodeId, input: usize) -> Option<Vec<[f64; 4]>> {
+    let pin = snarl.in_pin(InPinId { node, input });
+    let remote = pin.remotes.first()?;
+    let source = snarl.get_node(remote.node)?;
+    match source.output_value(remote.output)? {
+        PortValue::Vector(data) => Some(data.clone()),
+        _ => None,
+    }
+}
+
 /// Traverse the graph, solve the PMSM ODE system, and write results into node outputs.
 ///
 /// # Errors
@@ -111,6 +139,10 @@ pub fn run_simulation(snarl: &mut Snarl<SimNode>, config: &SimConfig) -> Result<
                 SimNode::InversePark(p) => {
                     p.output_f_abc = None;
                 }
+                SimNode::Park(p) => {
+                    p.output_f_d = None;
+                    p.output_f_q = None;
+                }
                 SimNode::Constant(_) | SimNode::Plot(_) => {}
             }
         }
@@ -121,6 +153,7 @@ pub fn run_simulation(snarl: &mut Snarl<SimNode>, config: &SimConfig) -> Result<
     let mut mech_id: Option<NodeId> = None;
     let mut torque_id: Option<NodeId> = None;
     let mut inv_park_id: Option<NodeId> = None;
+    let mut park_id: Option<NodeId> = None;
 
     for (id, node) in snarl.node_ids() {
         match node {
@@ -128,6 +161,7 @@ pub fn run_simulation(snarl: &mut Snarl<SimNode>, config: &SimConfig) -> Result<
             SimNode::Mechanical(_) if mech_id.is_none() => mech_id = Some(id),
             SimNode::Torque(_) if torque_id.is_none() => torque_id = Some(id),
             SimNode::InversePark(_) if inv_park_id.is_none() => inv_park_id = Some(id),
+            SimNode::Park(_) if park_id.is_none() => park_id = Some(id),
             _ => {}
         }
     }
@@ -378,6 +412,24 @@ pub fn run_simulation(snarl: &mut Snarl<SimNode>, config: &SimConfig) -> Result<
         && let Some(SimNode::Torque(t)) = snarl.get_node_mut(tid)
     {
         t.output_t_e = Some(PortValue::Signal(t_e_series));
+    }
+
+    // ── 13. Forward Park transform if a Park node is present ─────────────────
+    // Reads the Vector (f_abc) and Signal (θ_e) from whatever nodes are
+    // connected to its inputs, then writes f_d and f_q back.
+    if let Some(pid) = park_id {
+        let f_abc = get_vector_input(snarl, pid, 0);
+        let theta_e = get_signal_input(snarl, pid, 1);
+
+        if let (Some(f_abc), Some(theta_e)) = (f_abc, theta_e) {
+            let (f_d_series, f_q_series) =
+                crate::nodes::park::ParkNode::compute(&f_abc, &theta_e);
+
+            if let Some(SimNode::Park(park)) = snarl.get_node_mut(pid) {
+                park.output_f_d = Some(PortValue::Signal(f_d_series));
+                park.output_f_q = Some(PortValue::Signal(f_q_series));
+            }
+        }
     }
 
     Ok(())

@@ -25,6 +25,7 @@ use self::constant::ConstantNode;
 use self::electrical::ElectricalNode;
 use self::mechanical::MechanicalNode;
 use self::park::InverseParkNode;
+use self::park::ParkNode;
 use self::plot::PlotNode;
 use self::torque::TorqueNode;
 
@@ -41,6 +42,8 @@ pub enum SimNode {
     Mechanical(MechanicalNode),
     /// Inverse Park transform (algebraic post-processing).
     InversePark(InverseParkNode),
+    /// Forward Park transform (algebraic post-processing).
+    Park(ParkNode),
     /// Time-series plot (sink).
     Plot(PlotNode),
 }
@@ -54,6 +57,7 @@ impl SimNode {
             Self::Torque(_) => TorqueNode::title(),
             Self::Mechanical(_) => MechanicalNode::title(),
             Self::InversePark(_) => InverseParkNode::title(),
+            Self::Park(_) => ParkNode::title(),
             Self::Plot(_) => PlotNode::title(),
         }
     }
@@ -88,6 +92,10 @@ impl SimNode {
                 .iter()
                 .map(|(_, t)| *t)
                 .collect(),
+            Self::Park(_) => ParkNode::input_ports()
+                .iter()
+                .map(|(_, t)| *t)
+                .collect(),
             Self::Plot(p) => p.input_ports().iter().map(|(_, t)| *t).collect(),
         }
     }
@@ -109,6 +117,10 @@ impl SimNode {
                 .map(|(_, t)| *t)
                 .collect(),
             Self::InversePark(_) => InverseParkNode::output_ports()
+                .iter()
+                .map(|(_, t)| *t)
+                .collect(),
+            Self::Park(_) => ParkNode::output_ports()
                 .iter()
                 .map(|(_, t)| *t)
                 .collect(),
@@ -142,6 +154,9 @@ impl SimNode {
             Self::InversePark(_) => InverseParkNode::input_ports()
                 .get(input)
                 .map_or("?", |(n, _)| n),
+            Self::Park(_) => ParkNode::input_ports()
+                .get(input)
+                .map_or("?", |(n, _)| n),
             Self::Plot(_) => "data",
         }
     }
@@ -164,6 +179,9 @@ impl SimNode {
             Self::InversePark(_) => InverseParkNode::output_ports()
                 .get(output)
                 .map_or("?", |(n, _)| n),
+            Self::Park(_) => ParkNode::output_ports()
+                .get(output)
+                .map_or("?", |(n, _)| n),
             Self::Plot(_) => PlotNode::output_ports().get(output).map_or("?", |(n, _)| n),
         }
     }
@@ -176,6 +194,7 @@ impl SimNode {
             Self::Torque(_) => TorqueNode::header_color(),
             Self::Mechanical(_) => MechanicalNode::header_color(),
             Self::InversePark(_) => InverseParkNode::header_color(),
+            Self::Park(_) => ParkNode::header_color(),
             Self::Plot(_) => PlotNode::header_color(),
         }
     }
@@ -189,6 +208,8 @@ impl SimNode {
             (Self::Mechanical(m), 0) => m.output_omega_m.as_ref(),
             (Self::Mechanical(m), 1) => m.output_theta_e.as_ref(),
             (Self::InversePark(p), 0) => p.output_f_abc.as_ref(),
+            (Self::Park(p), 0) => p.output_f_d.as_ref(),
+            (Self::Park(p), 1) => p.output_f_q.as_ref(),
             _ => None,
         }
     }
@@ -201,6 +222,7 @@ impl SimNode {
             Self::Torque(n) => n.custom_size,
             Self::Mechanical(n) => n.custom_size,
             Self::InversePark(n) => n.custom_size,
+            Self::Park(n) => n.custom_size,
             Self::Plot(n) => n.custom_size,
         };
         raw.map(|[w, h]| egui::vec2(w, h))
@@ -215,6 +237,7 @@ impl SimNode {
             Self::Torque(n) => n.custom_size = val,
             Self::Mechanical(n) => n.custom_size = val,
             Self::InversePark(n) => n.custom_size = val,
+            Self::Park(n) => n.custom_size = val,
             Self::Plot(n) => n.custom_size = val,
         }
     }
@@ -405,7 +428,7 @@ impl SnarlViewer<SimNode> for SimViewer {
                         param_row(ui, "L_q (H)", &mut t.l_q);
                     });
             }
-            SimNode::Constant(_) | SimNode::InversePark(_) | SimNode::Plot(_) => {}
+            SimNode::Constant(_) | SimNode::InversePark(_) | SimNode::Park(_) | SimNode::Plot(_) => {}
         }
     }
 
@@ -620,6 +643,7 @@ fn node_palette() -> Vec<(&'static str, SimNode)> {
             "Inverse Park",
             SimNode::InversePark(InverseParkNode::default()),
         ),
+        ("Park", SimNode::Park(ParkNode::default())),
         ("Plot", SimNode::Plot(PlotNode::default())),
     ]
 }

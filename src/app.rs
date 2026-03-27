@@ -213,6 +213,10 @@ fn show_node_library(ui: &mut egui::Ui, snarl: &mut Snarl<SimNode>) {
             "Inverse Park",
             SimNode::InversePark(nodes::park::InverseParkNode::default()),
         ),
+        (
+            "Park",
+            SimNode::Park(nodes::park::ParkNode::default()),
+        ),
         ("Plot", SimNode::Plot(nodes::plot::PlotNode::default())),
     ];
 
