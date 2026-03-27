@@ -129,6 +129,41 @@ fn interpolate_signal(signal: &[[f64; 2]], t: f64) -> f64 {
     v0 + frac * (v1 - v0)
 }
 
+/// Linearly interpolate a `[t, a, b, c]` 3-phase time-series at time `t`.
+///
+/// Clamps to boundary values outside the series range.
+/// Returns `[0.0; 3]` for an empty series.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "indices are bounded by early-return guards: is_empty, len==1, boundary clamps, and partition_point"
+)]
+fn interpolate_vector(signal: &[[f64; 4]], t: f64) -> [f64; 3] {
+    if signal.is_empty() {
+        return [0.0; 3];
+    }
+    if signal.len() == 1 || t <= signal[0][0] {
+        return [signal[0][1], signal[0][2], signal[0][3]];
+    }
+    let last = signal.len() - 1;
+    if t >= signal[last][0] {
+        return [signal[last][1], signal[last][2], signal[last][3]];
+    }
+    let idx = signal.partition_point(|s| s[0] < t);
+    let frac = {
+        let (t0, t1) = (signal[idx - 1][0], signal[idx][0]);
+        if (t1 - t0).abs() < f64::EPSILON {
+            0.0
+        } else {
+            (t - t0) / (t1 - t0)
+        }
+    };
+    [
+        signal[idx - 1][1] + frac * (signal[idx][1] - signal[idx - 1][1]),
+        signal[idx - 1][2] + frac * (signal[idx][2] - signal[idx - 1][2]),
+        signal[idx - 1][3] + frac * (signal[idx][3] - signal[idx - 1][3]),
+    ]
+}
+
 /// An ODE forcing input resolved from the graph: constant or time-varying.
 #[derive(Clone)]
 enum ExternalInput {
@@ -161,6 +196,56 @@ fn resolve_external_input(snarl: &Snarl<SimNode>, node: NodeId, input: usize) ->
         return ExternalInput::Signal(data);
     }
     ExternalInput::Constant(0.0)
+}
+
+/// Voltage source for the d/q ODE equations.
+///
+/// When `v_d`/`v_q` come directly from graph wires (constants or pre-computed
+/// signals), they are `Direct`. When they come from a Park transform whose
+/// `theta_e` is an ODE state (circular dependency), the Park math is folded
+/// into the RHS closure via `ParkCoupled`.
+#[derive(Clone)]
+enum VoltageSource {
+    /// `v_d` and `v_q` resolved independently from the graph.
+    Direct {
+        v_d: ExternalInput,
+        v_q: ExternalInput,
+    },
+    /// Park transform computed inline using `theta_e` from the ODE state vector.
+    /// `f_abc` is the 3-phase voltage source (pre-resolved, constant or signal).
+    ParkCoupled { f_abc: Vec<[f64; 4]> },
+}
+
+impl VoltageSource {
+    /// Evaluate `(v_d, v_q)` at time `t` using the given `theta_e`.
+    ///
+    /// For `Direct`, `theta_e` is ignored.
+    fn eval(&self, t: f64, theta_e: f64) -> (f64, f64) {
+        match self {
+            Self::Direct { v_d, v_q } => (v_d.at(t), v_q.at(t)),
+            Self::ParkCoupled { f_abc } => {
+                let [v_a, v_b, v_c] = interpolate_vector(f_abc, t);
+                let two_thirds = 2.0 / 3.0;
+                let two_thirds_pi = std::f64::consts::TAU / 3.0;
+
+                let cos0 = theta_e.cos();
+                let sin0 = theta_e.sin();
+                let cos_b = (theta_e - two_thirds_pi).cos();
+                let sin_b = (theta_e - two_thirds_pi).sin();
+                let cos_c = (theta_e + two_thirds_pi).cos();
+                let sin_c = (theta_e + two_thirds_pi).sin();
+
+                let v_d = two_thirds * (v_a * cos0 + v_b * cos_b + v_c * cos_c);
+                let v_q = -two_thirds * (v_a * sin0 + v_b * sin_b + v_c * sin_c);
+                (v_d, v_q)
+            }
+        }
+    }
+
+    /// Whether this source is a Park-coupled source (for Jacobian dispatch).
+    const fn is_park_coupled(&self) -> bool {
+        matches!(self, Self::ParkCoupled { .. })
+    }
 }
 
 /// Traverse the graph, solve the PMSM ODE system, and write results into node outputs.
@@ -320,9 +405,36 @@ pub fn run_simulation(snarl: &mut Snarl<SimNode>, config: &SimConfig) -> Result<
     }
 
     // ── 7c. Resolve external ODE forcing inputs ─────────────────────────────
-    // ElectricalNode pin layout: 0 = v_d (Signal), 1 = v_q (Signal), 2 = ω_m (Signal)
-    let v_d_input = resolve_external_input(snarl, elec_id, 0);
-    let v_q_input = resolve_external_input(snarl, elec_id, 1);
+    // Check if v_d/v_q come from a Park node whose theta_e is ODE-coupled
+    // (circular dependency: Electrical ← Park ← Mechanical theta_e).
+    // When detected, the Park transform is folded into the RHS closure so it
+    // evaluates at the instantaneous theta_e state during integration.
+    let voltage_source = 'voltage: {
+        if let Some(pid) = park_id {
+            let vd_pin = snarl.in_pin(InPinId {
+                node: elec_id,
+                input: 0,
+            });
+            let vd_from_park = vd_pin.remotes.first().is_some_and(|r| r.node == pid);
+
+            if vd_from_park {
+                let theta_pin = snarl.in_pin(InPinId {
+                    node: pid,
+                    input: 1,
+                });
+                let theta_from_mech = theta_pin.remotes.first().is_some_and(|r| r.node == mech_id);
+
+                if theta_from_mech && let Some(f_abc) = get_vector_input(snarl, pid, 0) {
+                    break 'voltage VoltageSource::ParkCoupled { f_abc };
+                }
+            }
+        }
+        // Default: resolve v_d, v_q independently from the graph.
+        VoltageSource::Direct {
+            v_d: resolve_external_input(snarl, elec_id, 0),
+            v_q: resolve_external_input(snarl, elec_id, 1),
+        }
+    };
     // MechanicalNode pin layout: 0 = T_e (Signal), 1 = T_L (Signal)
     let t_l_input = resolve_external_input(snarl, mech_id, 1);
 
@@ -366,12 +478,10 @@ pub fn run_simulation(snarl: &mut Snarl<SimNode>, config: &SimConfig) -> Result<
         .rhs_implicit(
             // ── RHS: compute time derivatives ──────────────────────────────
             {
-                let v_d_ext = v_d_input.clone();
-                let v_q_ext = v_q_input.clone();
+                let voltage_src = voltage_source.clone();
                 let t_l_ext = t_l_input.clone();
                 move |x, p, t, y| {
-                    let v_d = v_d_ext.at(t);
-                    let v_q = v_q_ext.at(t);
+                    let (v_d, v_q) = voltage_src.eval(t, x[S_TE]);
                     let t_l = t_l_ext.at(t);
 
                     // Electromagnetic torque (used in the mechanical equation below)
@@ -397,35 +507,57 @@ pub fn run_simulation(snarl: &mut Snarl<SimNode>, config: &SimConfig) -> Result<
                     y[S_TE] = p[P_NP] * x[S_WM];
                 }
             },
-            // ── Jacobian-vector product J·v where J = ∂f/∂x ───────────────
-            |x, p, _t, v, y| {
-                // Partial derivatives of T_e w.r.t. state components
-                let dt_e_did = 1.5 * p[P_T_NP] * (p[P_T_LD] - p[P_T_LQ]) * x[S_IQ];
-                let dt_e_diq = 1.5 * p[P_T_NP] * (p[P_T_LAM] + (p[P_T_LD] - p[P_T_LQ]) * x[S_ID]);
+            // ── Jacobian-vector product J·v where J = ∂f/∂x ─────────────
+            {
+                let voltage_src_jac = voltage_source.clone();
+                let park_coupled = voltage_source.is_park_coupled();
+                move |x, p, t, v, y| {
+                    // Partial derivatives of T_e w.r.t. state components
+                    let dt_e_did = 1.5 * p[P_T_NP] * (p[P_T_LD] - p[P_T_LQ]) * x[S_IQ];
+                    let dt_e_diq =
+                        1.5 * p[P_T_NP] * (p[P_T_LAM] + (p[P_T_LD] - p[P_T_LQ]) * x[S_ID]);
 
-                // ∂(di_d/dt)/∂(i_d, i_q, ω_m)
-                let did_did = -p[P_RS] / p[P_LD];
-                let did_diq = p[P_NP] * x[S_WM] * p[P_LQ] / p[P_LD];
-                let did_dwm = p[P_NP] * p[P_LQ] * x[S_IQ] / p[P_LD];
+                    // ∂(di_d/dt)/∂(i_d, i_q, ω_m)
+                    let did_did = -p[P_RS] / p[P_LD];
+                    let did_diq = p[P_NP] * x[S_WM] * p[P_LQ] / p[P_LD];
+                    let did_dwm = p[P_NP] * p[P_LQ] * x[S_IQ] / p[P_LD];
 
-                // ∂(di_q/dt)/∂(i_d, i_q, ω_m)
-                let diq_did = -p[P_NP] * x[S_WM] * p[P_LD] / p[P_LQ];
-                let diq_diq = -p[P_RS] / p[P_LQ];
-                let diq_dwm = (-p[P_NP] * p[P_LD] * x[S_ID] - p[P_NP] * p[P_LAM]) / p[P_LQ];
+                    // ∂(di_q/dt)/∂(i_d, i_q, ω_m)
+                    let diq_did = -p[P_NP] * x[S_WM] * p[P_LD] / p[P_LQ];
+                    let diq_diq = -p[P_RS] / p[P_LQ];
+                    let diq_dwm = (-p[P_NP] * p[P_LD] * x[S_ID] - p[P_NP] * p[P_LAM]) / p[P_LQ];
 
-                // ∂(dω_m/dt)/∂(i_d, i_q, ω_m)
-                let dwm_did = dt_e_did / p[P_J];
-                let dwm_diq = dt_e_diq / p[P_J];
-                let dwm_dwm = -p[P_B] / p[P_J];
+                    // ∂(dω_m/dt)/∂(i_d, i_q, ω_m)
+                    let dwm_did = dt_e_did / p[P_J];
+                    let dwm_diq = dt_e_diq / p[P_J];
+                    let dwm_dwm = -p[P_B] / p[P_J];
 
-                // ∂(dθ_e/dt)/∂ω_m  (only non-zero entry in the θ_e row)
-                let dte_dwm = p[P_NP];
+                    // ∂(dθ_e/dt)/∂ω_m  (only non-zero entry in the θ_e row)
+                    let dte_dwm = p[P_NP];
 
-                // J·v  (θ_e has no dependence on i_d, i_q, or θ_e itself)
-                y[S_ID] = did_did * v[S_ID] + did_diq * v[S_IQ] + did_dwm * v[S_WM];
-                y[S_IQ] = diq_did * v[S_ID] + diq_diq * v[S_IQ] + diq_dwm * v[S_WM];
-                y[S_WM] = dwm_did * v[S_ID] + dwm_diq * v[S_IQ] + dwm_dwm * v[S_WM];
-                y[S_TE] = dte_dwm * v[S_WM];
+                    // Park-coupled θ_e dependence: dv_d/dθ = v_q, dv_q/dθ = -v_d
+                    let (did_dte, diq_dte) = if park_coupled {
+                        let (v_d, v_q) = voltage_src_jac.eval(t, x[S_TE]);
+                        (
+                            v_q / p[P_LD],  // (1/L_d) · dv_d/dθ = (1/L_d) · v_q
+                            -v_d / p[P_LQ], // (1/L_q) · dv_q/dθ = (1/L_q) · (-v_d)
+                        )
+                    } else {
+                        (0.0, 0.0)
+                    };
+
+                    // J·v
+                    y[S_ID] = did_did * v[S_ID]
+                        + did_diq * v[S_IQ]
+                        + did_dwm * v[S_WM]
+                        + did_dte * v[S_TE];
+                    y[S_IQ] = diq_did * v[S_ID]
+                        + diq_diq * v[S_IQ]
+                        + diq_dwm * v[S_WM]
+                        + diq_dte * v[S_TE];
+                    y[S_WM] = dwm_did * v[S_ID] + dwm_diq * v[S_IQ] + dwm_dwm * v[S_WM];
+                    y[S_TE] = dte_dwm * v[S_WM];
+                }
             },
         )
         .init(
@@ -1042,5 +1174,192 @@ mod tests {
         // Midpoint interpolation
         assert!((interpolate_signal(&series, 0.5) - 15.0).abs() < eps);
         assert!((interpolate_signal(&series, 1.5) - 25.0).abs() < eps);
+    }
+
+    #[test]
+    fn interpolate_vector_edge_cases() {
+        use super::interpolate_vector;
+
+        // Empty signal returns [0, 0, 0]
+        assert_eq!(interpolate_vector(&[], 1.0), [0.0; 3]);
+
+        // Single point returns those values for any t
+        let single = [[5.0, 1.0, 2.0, 3.0]];
+        assert_eq!(interpolate_vector(&single, 0.0), [1.0, 2.0, 3.0]);
+        assert_eq!(interpolate_vector(&single, 5.0), [1.0, 2.0, 3.0]);
+        assert_eq!(interpolate_vector(&single, 100.0), [1.0, 2.0, 3.0]);
+
+        // Clamps to boundaries
+        let series = [
+            [0.0, 10.0, 20.0, 30.0],
+            [1.0, 40.0, 50.0, 60.0],
+            [2.0, 70.0, 80.0, 90.0],
+        ];
+        assert_eq!(interpolate_vector(&series, -1.0), [10.0, 20.0, 30.0]);
+        assert_eq!(interpolate_vector(&series, 3.0), [70.0, 80.0, 90.0]);
+
+        // Midpoint interpolation
+        let eps = 1e-12;
+        let mid = interpolate_vector(&series, 0.5);
+        assert!((mid[0] - 25.0).abs() < eps, "a: {}", mid[0]);
+        assert!((mid[1] - 35.0).abs() < eps, "b: {}", mid[1]);
+        assert!((mid[2] - 45.0).abs() < eps, "c: {}", mid[2]);
+    }
+
+    /// Verify that a Park node wired between a 3-phase constant and the Electrical
+    /// node, with `theta_e` from the Mechanical node (circular ODE dependency),
+    /// produces non-zero motor currents and speed.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "integration test exercises full Park-coupled simulation pipeline"
+    )]
+    #[test]
+    fn park_coupled_to_ode_produces_nonzero_output() {
+        use crate::nodes::park::ParkNode;
+        use crate::port::PortType;
+
+        let mut snarl: Snarl<SimNode> = Snarl::new();
+        let pos = egui::pos2(0.0, 0.0);
+
+        // -- ODE nodes --
+        let elec_node = snarl.insert_node(pos, SimNode::Electrical(ElectricalNode::default()));
+        let mech_node = snarl.insert_node(pos, SimNode::Mechanical(MechanicalNode::default()));
+
+        // -- Park node --
+        let park_node = snarl.insert_node(pos, SimNode::Park(ParkNode::default()));
+
+        // -- 3-phase voltage source (Constant in Vector mode) --
+        // v_a=0, v_b=100, v_c=-100 produces v_q ≈ 115 V at θ_e=0 via Park,
+        // which drives q-axis current and generates torque to spin the motor.
+        let const_abc = snarl.insert_node(
+            pos,
+            SimNode::Constant(ConstantNode {
+                value: 0.0,
+                value_b: 100.0,
+                value_c: -100.0,
+                output_type: PortType::Vector,
+                ..ConstantNode::default()
+            }),
+        );
+
+        // -- Load torque = 0 --
+        let tl_node = snarl.insert_node(pos, SimNode::Constant(ConstantNode::default()));
+
+        // Wire: const_abc -> Park input 0 (f_abc)
+        snarl.connect(
+            OutPinId {
+                node: const_abc,
+                output: 0,
+            },
+            InPinId {
+                node: park_node,
+                input: 0,
+            },
+        );
+        // Wire: Mechanical theta_e (output 1) -> Park input 1 (theta_e)
+        snarl.connect(
+            OutPinId {
+                node: mech_node,
+                output: 1,
+            },
+            InPinId {
+                node: park_node,
+                input: 1,
+            },
+        );
+        // Wire: Park f_d (output 0) -> Electrical input 0 (v_d)
+        snarl.connect(
+            OutPinId {
+                node: park_node,
+                output: 0,
+            },
+            InPinId {
+                node: elec_node,
+                input: 0,
+            },
+        );
+        // Wire: Park f_q (output 1) -> Electrical input 1 (v_q)
+        snarl.connect(
+            OutPinId {
+                node: park_node,
+                output: 1,
+            },
+            InPinId {
+                node: elec_node,
+                input: 1,
+            },
+        );
+        // Wire: T_L -> Mechanical input 1
+        snarl.connect(
+            OutPinId {
+                node: tl_node,
+                output: 0,
+            },
+            InPinId {
+                node: mech_node,
+                input: 1,
+            },
+        );
+
+        let config = SimConfig {
+            t_start: 0.0,
+            t_end: 0.5,
+            rtol: 1e-6,
+            atol: 1e-8,
+        };
+
+        run_simulation(&mut snarl, &config).expect("simulation should succeed");
+
+        // Verify Electrical node has non-zero outputs
+        let SimNode::Electrical(elec) = snarl.get_node(elec_node).expect("elec node") else {
+            panic!("expected electrical node");
+        };
+        let PortValue::Signal(i_d) = elec.output_i_d.as_ref().expect("i_d output") else {
+            panic!("expected Signal");
+        };
+        let PortValue::Signal(i_q) = elec.output_i_q.as_ref().expect("i_q output") else {
+            panic!("expected Signal");
+        };
+
+        assert!(
+            i_d.len() > 10,
+            "expected many time steps, got {}",
+            i_d.len()
+        );
+
+        // With a 3-phase voltage applied via Park-coupled path, currents must be non-zero.
+        // This is the key assertion: the old code would produce all zeros here.
+        let last_i_d = i_d.last().expect("non-empty")[1];
+        let last_i_q = i_q.last().expect("non-empty")[1];
+        assert!(
+            last_i_d.abs() > 0.01 || last_i_q.abs() > 0.01,
+            "Park-coupled currents should be non-zero: i_d={last_i_d}, i_q={last_i_q}"
+        );
+
+        // Verify Mechanical node shows rotation
+        let SimNode::Mechanical(mech) = snarl.get_node(mech_node).expect("mech node") else {
+            panic!("expected mechanical node");
+        };
+        let PortValue::Signal(omega) = mech.output_omega_m.as_ref().expect("omega output") else {
+            panic!("expected Signal");
+        };
+        let last_omega = omega.last().expect("non-empty")[1];
+        assert!(
+            last_omega.abs() > 0.01,
+            "motor should be spinning: omega={last_omega}"
+        );
+
+        // Verify Park outputs are populated post-ODE (step 13 re-compute)
+        let SimNode::Park(park) = snarl.get_node(park_node).expect("park node") else {
+            panic!("expected park node");
+        };
+        assert!(
+            park.output_f_d.is_some(),
+            "Park f_d should be populated post-ODE"
+        );
+        assert!(
+            park.output_f_q.is_some(),
+            "Park f_q should be populated post-ODE"
+        );
     }
 }
