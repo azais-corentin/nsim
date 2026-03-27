@@ -356,7 +356,12 @@ impl SnarlViewer<SimNode> for SimViewer {
         // Plot nodes need immutable access to remote nodes for data, so handle
         // them before the mutable match on the node body.
         if matches!(&snarl[node], SimNode::Plot(_)) {
-            let plot_height = snarl[node].custom_size().map_or(200.0, |s| s.y.max(80.0));
+            let custom = snarl[node].custom_size();
+            // Constrain width to custom size so the plot can shrink, not just grow.
+            if let Some(size) = custom {
+                ui.set_max_width(size.x);
+            }
+            let plot_height = custom.map_or(200.0, |s| s.y.max(80.0));
             show_plot_inline(node, _inputs, ui, snarl, plot_height);
             return;
         }
@@ -549,10 +554,17 @@ impl SnarlViewer<SimNode> for SimViewer {
     ) {
         let current_size = snarl[node].custom_size();
 
-        // Enforce minimum width from stored custom size.
+        // Force exact width when the user has resized. Setting both min and max
+        // prevents the ratchet effect where content fills available width and
+        // then prevents shrinking on the next frame.
         if let Some(size) = current_size {
             ui.set_min_width(size.x);
+            ui.set_max_width(size.x);
         }
+
+        // Capture the actual node width before entering the right-to-left
+        // sub-layout, which has its own coordinate space.
+        let node_width = ui.available_width();
 
         // Resize grip in the bottom-right corner.
         let grip_size = 12.0;
@@ -580,12 +592,9 @@ impl SnarlViewer<SimNode> for SimViewer {
 
             if response.dragged() {
                 let delta = response.drag_delta();
-                let base = current_size.unwrap_or_else(|| {
-                    egui::vec2(
-                        ui.min_rect().width().max(80.0),
-                        ui.min_rect().height().max(40.0),
-                    )
-                });
+                // Use the real node width as the base, not the inner layout's
+                // min_rect which only reflects the grip's own allocation.
+                let base = current_size.unwrap_or_else(|| egui::vec2(node_width.max(80.0), 200.0));
                 let new_size =
                     egui::vec2((base.x + delta.x).max(80.0), (base.y + delta.y).max(40.0));
                 snarl[node].set_custom_size(new_size);
