@@ -400,6 +400,10 @@ mod tests {
 
     /// Build a minimal PMSM graph and run the solver, verifying that outputs
     /// are populated and physically plausible.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "integration test exercises full simulation pipeline"
+    )]
     #[test]
     fn pmsm_simulation_produces_plausible_results() {
         let mut snarl: Snarl<SimNode> = Snarl::new();
@@ -407,9 +411,27 @@ mod tests {
         let pos = egui::pos2(0.0, 0.0);
 
         // Create nodes
-        let vd_node = snarl.insert_node(pos, SimNode::Constant(ConstantNode { value: 0.0 }));
-        let vq_node = snarl.insert_node(pos, SimNode::Constant(ConstantNode { value: 24.0 }));
-        let tl_node = snarl.insert_node(pos, SimNode::Constant(ConstantNode { value: 0.0 }));
+        let vd_node = snarl.insert_node(
+            pos,
+            SimNode::Constant(ConstantNode {
+                value: 0.0,
+                ..ConstantNode::default()
+            }),
+        );
+        let vq_node = snarl.insert_node(
+            pos,
+            SimNode::Constant(ConstantNode {
+                value: 24.0,
+                ..ConstantNode::default()
+            }),
+        );
+        let tl_node = snarl.insert_node(
+            pos,
+            SimNode::Constant(ConstantNode {
+                value: 0.0,
+                ..ConstantNode::default()
+            }),
+        );
         let elec_node = snarl.insert_node(pos, SimNode::Electrical(ElectricalNode::default()));
         let torque_node = snarl.insert_node(pos, SimNode::Torque(TorqueNode::default()));
         let mech_node = snarl.insert_node(pos, SimNode::Mechanical(MechanicalNode::default()));

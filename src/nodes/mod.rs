@@ -142,7 +142,7 @@ impl SimNode {
             Self::InversePark(_) => InverseParkNode::input_ports()
                 .get(input)
                 .map_or("?", |(n, _)| n),
-            Self::Plot(_) => "signal",
+            Self::Plot(_) => "data",
         }
     }
 
@@ -190,6 +190,32 @@ impl SimNode {
             (Self::Mechanical(m), 1) => m.output_theta_e.as_ref(),
             (Self::InversePark(p), 0) => p.output_f_abc.as_ref(),
             _ => None,
+        }
+    }
+
+    /// Returns the user-defined node size override, if set.
+    pub fn custom_size(&self) -> Option<egui::Vec2> {
+        let raw = match self {
+            Self::Constant(n) => n.custom_size,
+            Self::Electrical(n) => n.custom_size,
+            Self::Torque(n) => n.custom_size,
+            Self::Mechanical(n) => n.custom_size,
+            Self::InversePark(n) => n.custom_size,
+            Self::Plot(n) => n.custom_size,
+        };
+        raw.map(|[w, h]| egui::vec2(w, h))
+    }
+
+    /// Sets or clears the user-defined node size override.
+    pub fn set_custom_size(&mut self, size: egui::Vec2) {
+        let val = Some([size.x, size.y]);
+        match self {
+            Self::Constant(n) => n.custom_size = val,
+            Self::Electrical(n) => n.custom_size = val,
+            Self::Torque(n) => n.custom_size = val,
+            Self::Mechanical(n) => n.custom_size = val,
+            Self::InversePark(n) => n.custom_size = val,
+            Self::Plot(n) => n.custom_size = val,
         }
     }
 }
@@ -244,10 +270,19 @@ impl SnarlViewer<SimNode> for SimViewer {
         let out_type = snarl[from.id.node].output_port_type(from.id.output);
         let in_type = snarl[to.id.node].input_port_type(to.id.input);
 
-        // Only connect if port types are compatible.
-        if let (Some(out_t), Some(in_t)) = (out_type, in_type)
-            && out_t.is_compatible_with(in_t)
-        {
+        // Check standard type compatibility, with a special case for Plot
+        // which accepts any plottable data (Signal or Vector).
+        let compatible = match (out_type, in_type) {
+            (Some(out_t), Some(in_t)) if out_t.is_compatible_with(in_t) => true,
+            (Some(PortType::Signal | PortType::Vector), _)
+                if matches!(snarl[to.id.node], SimNode::Plot(_)) =>
+            {
+                true
+            }
+            _ => false,
+        };
+
+        if compatible {
             // Disconnect any existing wires to this input (single connection only).
             for &remote in &to.remotes {
                 snarl.disconnect(remote, to.id);
@@ -321,7 +356,8 @@ impl SnarlViewer<SimNode> for SimViewer {
         // Plot nodes need immutable access to remote nodes for data, so handle
         // them before the mutable match on the node body.
         if matches!(&snarl[node], SimNode::Plot(_)) {
-            show_plot_inline(node, _inputs, ui, snarl);
+            let plot_height = snarl[node].custom_size().map_or(200.0, |s| s.y.max(80.0));
+            show_plot_inline(node, _inputs, ui, snarl, plot_height);
             return;
         }
 
@@ -407,11 +443,16 @@ impl SnarlViewer<SimNode> for SimViewer {
 
                 for (label, template) in node_palette() {
                     // Check if any input of this template is compatible.
+                    // Plot accepts any plottable data (Signal or Vector).
                     let compatible_input = template
                         .input_port_types()
                         .iter()
                         .enumerate()
-                        .find(|(_, t)| out_type.is_some_and(|ot| ot.is_compatible_with(**t)))
+                        .find(|(_, t)| {
+                            out_type.is_some_and(|ot| ot.is_compatible_with(**t))
+                                || (matches!(out_type, Some(PortType::Signal | PortType::Vector))
+                                    && matches!(template, SimNode::Plot(_)))
+                        })
                         .map(|(i, _)| i);
 
                     if let Some(input_idx) = compatible_input
@@ -493,6 +534,64 @@ impl SnarlViewer<SimNode> for SimViewer {
     ) -> egui::Frame {
         frame.fill(snarl[node].header_color())
     }
+
+    fn has_footer(&mut self, _node: &SimNode) -> bool {
+        true
+    }
+
+    fn show_footer(
+        &mut self,
+        node: NodeId,
+        _inputs: &[InPin],
+        _outputs: &[OutPin],
+        ui: &mut Ui,
+        snarl: &mut Snarl<SimNode>,
+    ) {
+        let current_size = snarl[node].custom_size();
+
+        // Enforce minimum width from stored custom size.
+        if let Some(size) = current_size {
+            ui.set_min_width(size.x);
+        }
+
+        // Resize grip in the bottom-right corner.
+        let grip_size = 12.0;
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::BOTTOM), |ui| {
+            let (grip_rect, response) =
+                ui.allocate_exact_size(egui::vec2(grip_size, grip_size), egui::Sense::drag());
+
+            // Draw diagonal grip lines.
+            let color = if response.hovered() || response.dragged() {
+                Color32::from_gray(180)
+            } else {
+                Color32::from_gray(100)
+            };
+            let painter = ui.painter();
+            for i in 0..3 {
+                let offset = i as f32 * 3.5;
+                painter.line_segment(
+                    [
+                        egui::pos2(grip_rect.right() - offset, grip_rect.bottom()),
+                        egui::pos2(grip_rect.right(), grip_rect.bottom() - offset),
+                    ],
+                    egui::Stroke::new(1.0, color),
+                );
+            }
+
+            if response.dragged() {
+                let delta = response.drag_delta();
+                let base = current_size.unwrap_or_else(|| {
+                    egui::vec2(
+                        ui.min_rect().width().max(80.0),
+                        ui.min_rect().height().max(40.0),
+                    )
+                });
+                let new_size =
+                    egui::vec2((base.x + delta.x).max(80.0), (base.y + delta.y).max(40.0));
+                snarl[node].set_custom_size(new_size);
+            }
+        });
+    }
 }
 
 /// The palette of node types available for creation.
@@ -527,7 +626,13 @@ fn param_row(ui: &mut Ui, label: &str, value: &mut f64) {
 ///
 /// Collects signal data from connected input pins' remote output nodes and
 /// plots each as a line series.
-fn show_plot_inline(_node_id: NodeId, inputs: &[InPin], ui: &mut Ui, snarl: &Snarl<SimNode>) {
+fn show_plot_inline(
+    _node_id: NodeId,
+    inputs: &[InPin],
+    ui: &mut Ui,
+    snarl: &Snarl<SimNode>,
+    plot_height: f32,
+) {
     use egui_plot::{Line, PlotPoints};
 
     // Collect plot data from connected remote nodes before rendering.
@@ -559,7 +664,7 @@ fn show_plot_inline(_node_id: NodeId, inputs: &[InPin], ui: &mut Ui, snarl: &Sna
     }
 
     let plot = egui_plot::Plot::new(ui.id().with("plot_area"))
-        .height(200.0)
+        .height(plot_height)
         .allow_drag(false)
         .allow_scroll(false)
         .allow_zoom(false)

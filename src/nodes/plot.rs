@@ -13,11 +13,17 @@ use crate::port::PortType;
 pub struct PlotNode {
     /// Number of Signal input pins. Minimum 1, maximum 8.
     pub num_inputs: usize,
+    /// User-defined node size override (width, height).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_size: Option<[f32; 2]>,
 }
 
 impl Default for PlotNode {
     fn default() -> Self {
-        Self { num_inputs: 1 }
+        Self {
+            num_inputs: 1,
+            custom_size: None,
+        }
     }
 }
 

@@ -15,6 +15,9 @@ pub struct InverseParkNode {
     /// Most-recently computed ABC output; skipped during serialization.
     #[serde(skip)]
     pub output_f_abc: Option<PortValue>,
+    /// User-defined node size override (width, height).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_size: Option<[f32; 2]>,
 }
 
 impl InverseParkNode {

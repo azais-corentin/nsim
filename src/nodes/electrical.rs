@@ -34,6 +34,9 @@ pub struct ElectricalNode {
     /// Output signal for q-axis current, populated after simulation
     #[serde(skip)]
     pub output_i_q: Option<PortValue>,
+    /// User-defined node size override (width, height).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_size: Option<[f32; 2]>,
 }
 
 impl Default for ElectricalNode {
@@ -48,6 +51,7 @@ impl Default for ElectricalNode {
             i_q_0: 0.0,
             output_i_d: None,
             output_i_q: None,
+            custom_size: None,
         }
     }
 }

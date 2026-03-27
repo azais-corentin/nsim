@@ -31,6 +31,9 @@ pub struct MechanicalNode {
     /// Electrical angle time-series produced after simulation.
     #[serde(skip)]
     pub output_theta_e: Option<PortValue>,
+    /// User-defined node size override (width, height).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_size: Option<[f32; 2]>,
 }
 
 impl Default for MechanicalNode {
@@ -43,6 +46,7 @@ impl Default for MechanicalNode {
             theta_e_0: 0.0,
             output_omega_m: None,
             output_theta_e: None,
+            custom_size: None,
         }
     }
 }

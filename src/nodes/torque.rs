@@ -20,6 +20,9 @@ pub struct TorqueNode {
     /// Most-recently computed torque signal; skipped during serialization.
     #[serde(skip)]
     pub output_t_e: Option<PortValue>,
+    /// User-defined node size override (width, height).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_size: Option<[f32; 2]>,
 }
 
 impl Default for TorqueNode {
@@ -30,6 +33,7 @@ impl Default for TorqueNode {
             l_d: 0.008,
             l_q: 0.008,
             output_t_e: None,
+            custom_size: None,
         }
     }
 }
