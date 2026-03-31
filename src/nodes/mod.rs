@@ -623,9 +623,7 @@ impl SnarlViewer<SimNode> for SimViewer {
         _outputs: &[OutPin],
         snarl: &Snarl<SimNode>,
     ) -> egui::Frame {
-        frame
-            .fill(snarl[node].header_color())
-            .inner_margin(egui::Margin::symmetric(8, 4))
+        frame.fill(snarl[node].header_color())
     }
 
     fn has_footer(&mut self, _node: &SimNode) -> bool {
